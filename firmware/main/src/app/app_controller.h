@@ -3,6 +3,7 @@
 #include "esp32_fix.h"
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <AsyncJson.h>
 
 #include <array>
 #include <cstdint>
@@ -49,7 +50,7 @@ class AppController {
   void handleLogsGet(AsyncWebServerRequest *request);
   void handleDebugPageGet(AsyncWebServerRequest *request);
   void handleDebugStatusGet(AsyncWebServerRequest *request);
-  void handleDebugTestPost(AsyncWebServerRequest *request);
+  void handleDebugTestJson(AsyncWebServerRequest *request, JsonVariant &json);
   void applyPendingDebugTest();
 
   void tickSetup();

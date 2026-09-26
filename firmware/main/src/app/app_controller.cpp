@@ -58,7 +58,9 @@ void AppController::begin() {
   webServer_.on("/api/logs", HTTP_GET, [this](AsyncWebServerRequest *request) { handleLogsGet(request); });
   webServer_.on("/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugPageGet(request); });
   webServer_.on("/api/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugStatusGet(request); });
-  webServer_.on("/api/debug/test", HTTP_POST, [this](AsyncWebServerRequest *request) { handleDebugTestPost(request); });
+  auto* debugTestHandler = new AsyncCallbackJsonWebHandler(
+      "/api/debug/test", [this](AsyncWebServerRequest *request, JsonVariant &json) { handleDebugTestJson(request, json); });
+  webServer_.addHandler(debugTestHandler);
   webServer_.begin();
   eventLog_.logf("web", "GET /api/game, /api/logs, /debug, POST /api/touch, /api/debug/test ready");
 
@@ -691,18 +693,8 @@ void AppController::handleDebugStatusGet(AsyncWebServerRequest *request) {
   request->send(200, "application/json", body);
 }
 
-void AppController::handleDebugTestPost(AsyncWebServerRequest *request) {
-  if (!request->hasParam("plain", true)) {
-    request->send(400, "application/json", "{\"error\":\"missing_body\"}");
-    return;
-  }
-
-  String body = request->getParam("plain", true)->value();
-  JsonDocument doc;
-  if (deserializeJson(doc, body) != DeserializationError::Ok) {
-    request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
-    return;
-  }
+void AppController::handleDebugTestJson(AsyncWebServerRequest *request, JsonVariant &json) {
+  JsonObject doc = json.as<JsonObject>();
 
   const char* component = doc["component"] | "";
   const char* action = doc["action"] | "";
