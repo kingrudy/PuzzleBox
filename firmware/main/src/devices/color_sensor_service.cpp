@@ -31,7 +31,9 @@ std::uint32_t ColorSensorService::measureFrequency(bool s2High, bool s3High) {
 
 void ColorSensorService::poll() {
   const unsigned long now = millis();
-  if (now - lastSampleMs_ < kSampleIntervalMs) {
+  const std::uint32_t interval =
+      consecutiveNoSignal_ >= kNoSignalStreakForBackoff ? kBackoffIntervalMs : kSampleIntervalMs;
+  if (now - lastSampleMs_ < interval) {
     return;
   }
   lastSampleMs_ = now;
@@ -41,6 +43,11 @@ void ColorSensorService::poll() {
   blueHz_ = measureFrequency(/*s2=*/false, /*s3=*/true);
 
   color_ = classify(redHz_, greenHz_, blueHz_);
+  if (color_ == Color::kNoSignal) {
+    if (consecutiveNoSignal_ < 255) ++consecutiveNoSignal_;
+  } else {
+    consecutiveNoSignal_ = 0;
+  }
 }
 
 ColorSensorService::Color ColorSensorService::classify(std::uint32_t r, std::uint32_t g,

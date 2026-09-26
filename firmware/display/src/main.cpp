@@ -98,6 +98,7 @@ void setup() {
 #endif
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);  // default modem-sleep adds latency/jitter on this poll-driven link
   WiFi.begin(config::kApSsid, config::kApPassword);
 }
 

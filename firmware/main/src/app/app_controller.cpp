@@ -50,6 +50,7 @@ void AppController::begin() {
   eventLog_.logf("highscore", "%u entries loaded from NVS", highscoreService_.count());
 
   WiFi.mode(WIFI_MODE_APSTA);
+  WiFi.setSleep(false);  // default modem-sleep adds latency/jitter to the display's poll link
   WiFi.softAP(config::kApSsid, config::kApPassword, config::kAccessPointChannel);
   eventLog_.logf("web", "AP ready on %s", config::kMainControllerIp);
 

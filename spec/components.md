@@ -1,8 +1,11 @@
 # Chronolab Puzzlebox — Component Inventory
 
 Single source of truth for **what hardware physically exists in the box right now**.
-[puzzlebox_hw.md](puzzlebox_hw.md) describes how everything is wired and driven; this
-file tracks build state — connected, not yet connected, or only planned.
+[puzzlebox_hw.md](puzzlebox_hw.md) describes how everything is wired and driven;
+[Specifications.md](Specifications.md) lists confirmed per-unit quirks (wrong register
+offsets, swapped channels, etc.) found by testing the actual hardware — check there before
+re-debugging something that "should" work per datasheet. This file tracks build state —
+connected, not yet connected, or only planned.
 
 **Update this table as you build.** When you add or remove a module, flip its `Status`
 here in the same commit. When asking for firmware changes, say which row changed —

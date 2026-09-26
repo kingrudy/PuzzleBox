@@ -10,6 +10,11 @@ Everything here is derived from the firmware in this repo. The authoritative sou
 - [boards/esp32-8048S050C.json](boards/esp32-8048S050C.json) and [boards/esp32-2424S012N.json](boards/esp32-2424S012N.json) — display board pin maps
 - [firmware/shared/include/config/network_config.h](firmware/shared/include/config/network_config.h) — network identities
 
+See [Specifications.md](Specifications.md) for confirmed per-unit hardware quirks (wrong
+register offsets, swapped channels, non-sequential button wiring, etc.) that this general
+guide's datasheet-level description doesn't capture — check there first if something here
+"should" work but doesn't on the real box.
+
 ---
 
 ## 1. System Overview

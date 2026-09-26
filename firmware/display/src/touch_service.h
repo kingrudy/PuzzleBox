@@ -11,13 +11,15 @@
 // pointer input device (see game_view.cpp) — single-point only, no gesture
 // support, no multi-touch, no calibration UI.
 //
-// UNVERIFIED AGAINST REAL HARDWARE. The GT911's I2C address (0x14 vs 0x5D)
-// is normally selected by the INT pin's level during reset, but
-// spec/puzzlebox_hw.md section 6.1 documents INT as "not connected" on this
-// board — so address selection here relies entirely on the board's own
-// factory pull-resistor strapping defaulting to 0x5D
-// (display_board::kTouchAddr). If touches don't register, that address is
-// the first thing to check with a logic analyzer or I2C scanner.
+// Verified against real hardware via /debug's raw touch test (live x/y,
+// raw point bytes, and GT911 config X_MAX/Y_MAX readout) and cross-checked
+// against Espressif's own esp_lcd_touch_gt911 driver as used by
+// mr-sven/esp32-8048S050C, a reference project for this exact board: no
+// swap_xy/mirror needed, address 0x5D (INT is grounded rather than
+// connected on this board, which forces that address rather than letting
+// it float per spec/puzzlebox_hw.md section 6.1) — begin() still probes
+// both 0x5D and 0x14 defensively in case a differently-strapped clone
+// shows up.
 class TouchService {
  public:
   void begin(diagnostics::EventLog& log);
@@ -31,14 +33,40 @@ class TouchService {
   // unchanged rather than treating silence as a release.
   bool readState(std::int16_t& x, std::int16_t& y);
 
+  // Raw diagnostics for /debug-style screens: the last status byte and the
+  // 8 raw point-register bytes, exactly as they came off the bus, before
+  // any interpretation as track_id/X/Y/size. Lets you see whether the
+  // *bytes* look like a real, moving coordinate or like bus noise/garbage,
+  // instead of trusting the already-decoded X/Y.
+  std::uint8_t lastStatusByte() const { return lastStatusByte_; }
+  const std::uint8_t* lastRawPoint() const { return lastRawPoint_; }
+
+  // GT911's own configured output resolution (registers 0x8048-0x804B),
+  // read once at begin(). If one of these is far smaller than this panel's
+  // actual 800x480, that axis's raw touch values are squashed into a tiny
+  // range at the source -- not a byte-order/swap bug in this driver.
+  std::uint16_t configXMax() const { return configXMax_; }
+  std::uint16_t configYMax() const { return configYMax_; }
+
  private:
   void writeReg8(std::uint16_t reg, std::uint8_t value);
   std::uint8_t readReg8(std::uint16_t reg);
-  void readRegs(std::uint16_t reg, std::uint8_t* buf, std::uint8_t len);
+  bool readRegs(std::uint16_t reg, std::uint8_t* buf, std::uint8_t len);
+  bool probeAddress(std::uint8_t addr);
+  void readConfigResolution();
 
+  // INT is documented as not connected on this board (spec/puzzlebox_hw.md
+  // 6.1), so the GT911's address-select strapping was never actually
+  // confirmed -- begin() probes both known addresses and uses whichever
+  // acks, instead of trusting display_board::kTouchAddr blindly.
+  std::uint8_t touchAddr_ = 0;
   bool pressed_ = false;
   std::int16_t lastX_ = 0;
   std::int16_t lastY_ = 0;
+  std::uint8_t lastStatusByte_ = 0;
+  std::uint8_t lastRawPoint_[8] = {0};
+  std::uint16_t configXMax_ = 0;
+  std::uint16_t configYMax_ = 0;
 };
 
 #endif  // ESP32_8048S050C

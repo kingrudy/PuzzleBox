@@ -27,7 +27,14 @@ constexpr std::uint16_t kVsyncBackPorch = 8;
 constexpr std::uint16_t kPclkActiveNeg = 0;
 
 constexpr std::size_t kBounceBufferSizePx = display_board::kWidth * 10;
-constexpr std::uint32_t kPollIntervalMs = 200;
+// Validated in spec/puzzlebox_hw.md section 7.3 -- do not tighten without
+// testing. A flat, faster poll here previously made the display flap
+// between online and offline.
+constexpr std::uint32_t kOnlinePollIntervalMs = 750;
+constexpr std::uint32_t kOfflineRetryIntervalMs = 1500;
+// A single dropped/slow poll shouldn't flash the "no connection" screen --
+// only show it once this many consecutive polls have failed.
+constexpr std::uint8_t kDisconnectAfterFailures = 2;
 
 // LVGL partial-render draw buffer, sized the same way as the GFX-library's
 // own bundled LVGL example for this display class (examples/LVGL/
@@ -281,18 +288,33 @@ bool GameView::fetchStatus() {
 void GameView::poll() {
   lv_timer_handler();  // LVGL needs frequent ticks for input/animation, independent of the network poll below
 
+  // The touch-dot readout needs to track a fast, brief tap -- refresh it
+  // every call (i.e. every loop() iteration), not just once per (now much
+  // slower, 750ms) network poll below, or a quick tap can start and end
+  // between two updates and never show.
+  if (debugTestPatternActive_ && currentScreen_ == debugScreen_) {
+    updateDebugScreen();
+  }
+
   const std::uint32_t now = millis();
-  if (now - lastPollMs_ < kPollIntervalMs) {
+  const std::uint32_t interval = connected_ ? kOnlinePollIntervalMs : kOfflineRetryIntervalMs;
+  if (now - lastPollMs_ < interval) {
     return;
   }
   lastPollMs_ = now;
 
   if (fetchStatus()) {
+    consecutiveFailures_ = 0;
     connected_ = true;
     render();
-  } else if (connected_) {
-    connected_ = false;
-    handleDisconnected();
+  } else {
+    if (consecutiveFailures_ < 0xFF) {
+      ++consecutiveFailures_;
+    }
+    if (connected_ && consecutiveFailures_ >= kDisconnectAfterFailures) {
+      connected_ = false;
+      handleDisconnected();
+    }
   }
 }
 
@@ -643,11 +665,47 @@ void GameView::buildDebugScreen() {
     lv_obj_center(label);
   }
 
+  // Absolutely-positioned dot that follows the raw touch coordinate exactly
+  // -- lets you visually confirm the reported point lands where you actually
+  // touch, not just that *some* number changes. A rotated/mirrored/scaled
+  // touch mapping would show the dot appearing away from your finger, which
+  // is the leading suspect for a puzzle (e.g. Resonant Grid) whose on-screen
+  // buttons never register a click even though touch itself "works".
+  constexpr int kDotSize = 28;
+  debugTouchDot_ = lv_obj_create(debugScreen_);
+  lv_obj_remove_style_all(debugTouchDot_);
+  lv_obj_set_size(debugTouchDot_, kDotSize, kDotSize);
+  lv_obj_set_style_radius(debugTouchDot_, kDotSize / 2, 0);
+  lv_obj_set_style_bg_color(debugTouchDot_, lv_color_make(255, 0, 255), 0);
+  lv_obj_set_style_bg_opa(debugTouchDot_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(debugTouchDot_, LV_OBJ_FLAG_HIDDEN);
+
   debugTouchLabel_ = lv_label_create(debugScreen_);
   lv_obj_set_style_text_color(debugTouchLabel_, lv_color_make(220, 220, 220), 0);
   lv_obj_set_style_text_font(debugTouchLabel_, &lv_font_montserrat_28, 0);
   lv_label_set_text(debugTouchLabel_, "Raak het scherm aan...");
-  lv_obj_align(debugTouchLabel_, LV_ALIGN_BOTTOM_MID, 0, -60);
+  lv_obj_align(debugTouchLabel_, LV_ALIGN_BOTTOM_MID, 0, -85);
+
+  // Raw, undecoded bytes off the I2C bus -- reveals whether the hardware
+  // itself is producing sane, stable data or noise, independent of whatever
+  // interpretation (byte order, swapped axes, scale) TouchService applies.
+  debugTouchRawLabel_ = lv_label_create(debugScreen_);
+  lv_obj_set_style_text_color(debugTouchRawLabel_, lv_color_make(150, 200, 255), 0);
+  lv_obj_set_style_text_font(debugTouchRawLabel_, &lv_font_montserrat_20, 0);
+  lv_label_set_text(debugTouchRawLabel_, "status=.. point=.. .. .. .. .. .. .. ..");
+  lv_obj_align(debugTouchRawLabel_, LV_ALIGN_BOTTOM_MID, 0, -55);
+
+  // GT911's own configured resolution, read once at boot -- if one of these
+  // is far below 800/480, that axis is squashed at the source, not a bug
+  // in how this code interprets the point registers.
+  if (touch_ != nullptr) {
+    lv_obj_t* configLabel = lv_label_create(debugScreen_);
+    lv_obj_set_style_text_color(configLabel, lv_color_make(255, 200, 100), 0);
+    lv_obj_set_style_text_font(configLabel, &lv_font_montserrat_20, 0);
+    lv_label_set_text_fmt(configLabel, "GT911 config: X_MAX=%u Y_MAX=%u", touch_->configXMax(),
+                           touch_->configYMax());
+    lv_obj_align(configLabel, LV_ALIGN_BOTTOM_MID, 0, -115);
+  }
 
   lv_obj_t* hint = lv_label_create(debugScreen_);
   lv_obj_set_style_text_color(hint, lv_color_make(140, 140, 150), 0);
@@ -664,6 +722,20 @@ void GameView::updateDebugScreen() {
   }
   lv_label_set_text_fmt(debugTouchLabel_, pressed ? "Touch: x=%d y=%d" : "Raak het scherm aan...",
                          static_cast<int>(point.x), static_cast<int>(point.y));
+
+  if (pressed) {
+    lv_obj_clear_flag(debugTouchDot_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(debugTouchDot_, point.x - 14, point.y - 14);
+  } else {
+    lv_obj_add_flag(debugTouchDot_, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  if (touch_ != nullptr) {
+    const std::uint8_t* p = touch_->lastRawPoint();
+    lv_label_set_text_fmt(debugTouchRawLabel_,
+                           "status=%02X point=%02X %02X %02X %02X %02X %02X %02X %02X",
+                           touch_->lastStatusByte(), p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +825,7 @@ void GameView::updateGridScreen() {
 void GameView::postGridTouch(std::uint8_t cell) {
   HTTPClient http;
   http.setConnectTimeout(300);
-  http.setTimeout(500);
+  http.setTimeout(800);
   http.begin(String("http://") + config::kMainControllerIp + "/api/touch");
   http.addHeader("Content-Type", "application/json");
   char body[32];

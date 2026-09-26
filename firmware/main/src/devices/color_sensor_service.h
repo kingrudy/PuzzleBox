@@ -35,6 +35,13 @@ class ColorSensorService {
   static constexpr std::uint32_t kPulseTimeoutUs = 8000;
   static constexpr std::uint32_t kFilterSettleUs = 300;
   static constexpr std::uint32_t kSignalFloorHz = 40;
+  // While nothing is plugged in, every measureFrequency() call times out on
+  // all 12 pulseIn()s (worst case ~96ms) at kSampleIntervalMs, i.e. every
+  // 250ms -- a large, avoidable chunk of the main loop for absent hardware.
+  // After a few consecutive NoSignal reads, back off to a much slower
+  // recheck; any real reading resets the streak and restores full speed.
+  static constexpr std::uint8_t kNoSignalStreakForBackoff = 4;
+  static constexpr std::uint32_t kBackoffIntervalMs = 3000;
 
   std::uint32_t measureFrequency(bool s2High, bool s3High);
   Color classify(std::uint32_t r, std::uint32_t g, std::uint32_t b) const;
@@ -44,4 +51,5 @@ class ColorSensorService {
   std::uint32_t blueHz_ = 0;
   Color color_ = Color::kNoSignal;
   unsigned long lastSampleMs_ = 0;
+  std::uint8_t consecutiveNoSignal_ = 0;
 };

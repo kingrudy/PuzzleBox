@@ -180,9 +180,12 @@ class GameView {
   std::array<lv_obj_t*, kHighscoreShown> hsHighscoreRows_{};
 
   lv_obj_t* debugTouchLabel_ = nullptr;
+  lv_obj_t* debugTouchRawLabel_ = nullptr;
+  lv_obj_t* debugTouchDot_ = nullptr;
 
   // --- redraw bookkeeping ---
   bool connected_ = false;
+  std::uint8_t consecutiveFailures_ = 0;
   std::uint32_t lastPollMs_ = 0;
 };
 
