@@ -146,11 +146,26 @@ std::uint8_t InputPanelService::tm1638ReadButtons() {
   }
   tm1638Stop();
 
-  std::uint8_t mask = 0;
+  std::uint8_t rawMask = 0;
   for (int i = 0; i < 4; ++i) {
     auto [first, second] = decodeTm1638ButtonPair(scan[i]);
-    if (first) mask |= (1 << (2 * i));
-    if (second) mask |= (1 << (2 * i + 1));
+    if (first) rawMask |= (1 << (2 * i));
+    if (second) rawMask |= (1 << (2 * i + 1));
+  }
+
+  // KSi's "K1" leg scans to raw bit (2*i), its "K2" leg to raw bit (2*i+1) --
+  // but on this board's actual silkscreen/wiring (confirmed by pressing each
+  // button individually via the /debug page), K1 legs are S1-S4 and K2 legs
+  // are S5-S8, not S1/S2 interleaved per KS line. Remap so bit n of the
+  // returned mask always means physical button S(n+1) -- every consumer
+  // (TetrisPuzzle, VibrationalCipherPuzzle, puzzlebox_hw.md's control
+  // tables) already assumes that sequential numbering.
+  static constexpr std::uint8_t kRawBitForButton[8] = {0, 2, 4, 6, 1, 3, 5, 7};
+  std::uint8_t mask = 0;
+  for (std::uint8_t button = 0; button < 8; ++button) {
+    if (rawMask & (1 << kRawBitForButton[button])) {
+      mask |= (1 << button);
+    }
   }
   return mask;
 }

@@ -88,6 +88,11 @@ void AppController::tick() {
 
   syncDiagnostics();
 
+  if (pendingDebugTest_.pending) {
+    applyPendingDebugTest();
+    pendingDebugTest_.pending = false;
+  }
+
   const std::uint32_t loopUs = micros() - loopStartUs;
   if (loopUs > maxLoopUs) {
     maxLoopUs = loopUs;
@@ -702,43 +707,64 @@ void AppController::handleDebugTestPost(AsyncWebServerRequest *request) {
   const char* component = doc["component"] | "";
   const char* action = doc["action"] | "";
 
-  if (strcmp(component, "servo") == 0) {
-    if (strcmp(action, "open") == 0) {
-      servoService_.open();
-    } else if (strcmp(action, "close") == 0) {
-      servoService_.close();
-    } else {
-      request->send(400, "application/json", "{\"error\":\"unknown_action\"}");
-      return;
-    }
-  } else if (strcmp(component, "vibration") == 0 && strcmp(action, "pulse") == 0) {
-    vibrationService_.pulse(300);
-  } else if (strcmp(component, "matrix") == 0 && strcmp(action, "test") == 0) {
-    matrixService_.runTest();
-  } else if (strcmp(component, "encoderLed") == 0 && strcmp(action, "set") == 0) {
+  const bool known =
+      (strcmp(component, "servo") == 0 && (strcmp(action, "open") == 0 || strcmp(action, "close") == 0)) ||
+      (strcmp(component, "vibration") == 0 && strcmp(action, "pulse") == 0) ||
+      (strcmp(component, "matrix") == 0 && strcmp(action, "test") == 0) ||
+      (strcmp(component, "encoderLed") == 0 && strcmp(action, "set") == 0) ||
+      (strcmp(component, "audio") == 0 && (strcmp(action, "tone") == 0 || strcmp(action, "cue") == 0));
+  if (!known) {
+    request->send(400, "application/json", "{\"error\":\"unknown_component_or_action\"}");
+    return;
+  }
+
+  if (strcmp(component, "encoderLed") == 0) {
     const int index = doc["index"] | -1;
     if (index < 0 || index >= static_cast<int>(encoder_hw::kEncoderCount)) {
       request->send(400, "application/json", "{\"error\":\"invalid_index\"}");
       return;
     }
-    const std::uint8_t r = doc["r"] | 0;
-    const std::uint8_t g = doc["g"] | 0;
-    const std::uint8_t b = doc["b"] | 0;
-    inputPanelService_.setEncoderLed(static_cast<std::uint8_t>(index), r, g, b);
+    pendingDebugTest_.index = static_cast<std::uint8_t>(index);
+    pendingDebugTest_.r = doc["r"] | 0;
+    pendingDebugTest_.g = doc["g"] | 0;
+    pendingDebugTest_.b = doc["b"] | 0;
+  }
+
+  // Only validated, hardware-free assignment happens on this (AsyncWebServer)
+  // task; applyPendingDebugTest() on the main loop does the real work.
+  strncpy(pendingDebugTest_.component, component, sizeof(pendingDebugTest_.component) - 1);
+  pendingDebugTest_.component[sizeof(pendingDebugTest_.component) - 1] = '\0';
+  strncpy(pendingDebugTest_.action, action, sizeof(pendingDebugTest_.action) - 1);
+  pendingDebugTest_.action[sizeof(pendingDebugTest_.action) - 1] = '\0';
+  pendingDebugTest_.pending = true;
+
+  request->send(200, "application/json", "{\"ok\":true}");
+}
+
+void AppController::applyPendingDebugTest() {
+  const char* component = pendingDebugTest_.component;
+  const char* action = pendingDebugTest_.action;
+
+  if (strcmp(component, "servo") == 0) {
+    if (strcmp(action, "open") == 0) {
+      servoService_.open();
+    } else {
+      servoService_.close();
+    }
+  } else if (strcmp(component, "vibration") == 0) {
+    vibrationService_.pulse(300);
+  } else if (strcmp(component, "matrix") == 0) {
+    matrixService_.runTest();
+  } else if (strcmp(component, "encoderLed") == 0) {
+    inputPanelService_.setEncoderLed(pendingDebugTest_.index, pendingDebugTest_.r, pendingDebugTest_.g,
+                                       pendingDebugTest_.b);
   } else if (strcmp(component, "audio") == 0) {
     if (strcmp(action, "tone") == 0) {
       audioCueBus_.playTone(440.0f, 500);
-    } else if (strcmp(action, "cue") == 0) {
-      audioCueBus_.playCue(protocol::AudioCueId::TestMelody);
     } else {
-      request->send(400, "application/json", "{\"error\":\"unknown_action\"}");
-      return;
+      audioCueBus_.playCue(protocol::AudioCueId::TestMelody);
     }
-  } else {
-    request->send(400, "application/json", "{\"error\":\"unknown_component\"}");
-    return;
   }
 
   eventLog_.logf("debug", "test %s.%s", component, action);
-  request->send(200, "application/json", "{\"ok\":true}");
 }

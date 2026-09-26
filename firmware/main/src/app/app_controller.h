@@ -50,6 +50,7 @@ class AppController {
   void handleDebugPageGet(AsyncWebServerRequest *request);
   void handleDebugStatusGet(AsyncWebServerRequest *request);
   void handleDebugTestPost(AsyncWebServerRequest *request);
+  void applyPendingDebugTest();
 
   void tickSetup();
   void tickPuzzleSelection();
@@ -137,6 +138,22 @@ class AppController {
   // --- touch bridge (relayed from the display over POST /api/touch) ---
   bool touchPending_ = false;
   std::uint8_t touchCellIndex_ = 0;
+
+  // --- debug-page test bridge (POST /api/debug/test) ---
+  // The handler only validates and stores the request; applyPendingDebugTest()
+  // does the actual hardware call from AppController::tick() on the main loop
+  // task, since AsyncWebServer callbacks run on their own task and several of
+  // these calls (encoder LEDs) hit the shared I2C bus that poll() also uses.
+  struct PendingDebugTest {
+    bool pending = false;
+    char component[16] = {0};
+    char action[8] = {0};
+    std::uint8_t index = 0;
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+  };
+  PendingDebugTest pendingDebugTest_;
 
   AsyncWebServer webServer_{80};
 };

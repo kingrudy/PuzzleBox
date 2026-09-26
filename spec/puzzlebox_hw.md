@@ -234,6 +234,14 @@ Fully bit-banged, no library.
 bit layouts (bits 0/4 and bits 1/5), so S5–S8 work on both genuine and clone boards. If
 your buttons come back wrong, that function is the place to look.
 
+**Confirmed on this box (via the `/debug` page, pressing each button individually):** the
+raw KS-line scan order does *not* match the S1–S8 silkscreen — K1 legs are S1–S4 and K2
+legs are S5–S8, not interleaved per KS line as the naive `bit(2i)`/`bit(2i+1)` scan would
+suggest. `tm1638ReadButtons()` remaps this before returning, so every other consumer
+(`TetrisPuzzle`, `VibrationalCipherPuzzle`, the table below) can keep assuming bit *n* =
+physical button S(n+1). If you swap in a different TM1638 clone, re-verify this via
+`/debug` before trusting button numbers again.
+
 **Brightness** is 1 (idle) or 7 (active), driven by `setStatusLed(bool)`, which
 `updateOutputsForState()` sets true during `Briefing` and `Active`.
 

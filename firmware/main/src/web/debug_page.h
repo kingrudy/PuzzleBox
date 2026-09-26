@@ -52,14 +52,41 @@ function card(id, title, status, bodyHtml) {
   return `<div class="card" id="card-${id}"><h2>${title} ${statusBadge(status)}</h2>${bodyHtml}</div>`;
 }
 
+function toast(msg, ok) {
+  let t = $('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);' +
+      'padding:8px 16px;border-radius:8px;font-size:13px;z-index:9;transition:opacity .2s;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.background = ok ? '#123d24' : '#3d1414';
+  t.style.color = ok ? '#5fd88a' : '#e08080';
+  t.style.opacity = '1';
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(() => { t.style.opacity = '0'; }, 1500);
+}
+
 async function post(component, action, extra) {
   try {
-    await fetch('/api/debug/test', {
+    const res = await fetch('/api/debug/test', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(Object.assign({component, action}, extra || {}))
     });
-  } catch (e) { console.error(e); }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast(`Fout: ${err.error || res.status}`, false);
+      return;
+    }
+    toast(`${component}.${action} verzonden`, true);
+    refresh();  // don't wait for the next 700ms tick to show the effect
+  } catch (e) {
+    toast('Kon server niet bereiken', false);
+    console.error(e);
+  }
 }
 
 function encoderCard(i, e, noBlue) {
@@ -87,9 +114,13 @@ async function refresh() {
 
   let html = '';
 
+  const buttonRows = [...Array(8).keys()].map((i) => {
+    const pressed = (d.tm1638.buttonMask & (1 << i)) !== 0;
+    return `<div class="row"><span>S${i + 1}</span><span class="val ${pressed ? 'on' : 'off'}">${pressed ? 'INGEDRUKT' : 'los'}</span></div>`;
+  }).join('');
   html += card('tm1638', 'TM1638 LED&amp;KEY', 'connected', `
-    <div class="row"><span>Knoppen-mask</span><span class="val">0b${d.tm1638.buttonMask.toString(2).padStart(8,'0')}</span></div>
-    <div class="note">Druk fysiek op S1-S8; mask hierboven moet live meebewegen.</div>
+    ${buttonRows}
+    <div class="note">Bit n van de ruwe mask = fysieke knop S(n+1) (zie spec/puzzlebox_hw.md &sect;4.4).</div>
   `);
 
   for (let i = 0; i < d.encoders.length; i++) {
