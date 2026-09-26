@@ -6,8 +6,12 @@
 #include <Wire.h>
 #include <esp_system.h>
 
+#include <cstring>
+
 #include "config/network_config.h"
 #include "devices/device_pins.h"
+#include "devices/encoder_hardware_config.h"
+#include "web/debug_page.h"
 
 namespace {
 constexpr std::uint32_t kSuccessDisplayMs = 3000;
@@ -52,8 +56,11 @@ void AppController::begin() {
   webServer_.on("/api/game", HTTP_GET, [this](AsyncWebServerRequest *request) { handleGameStatus(request); });
   webServer_.on("/api/touch", HTTP_POST, [this](AsyncWebServerRequest *request) { handleTouchPost(request); });
   webServer_.on("/api/logs", HTTP_GET, [this](AsyncWebServerRequest *request) { handleLogsGet(request); });
+  webServer_.on("/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugPageGet(request); });
+  webServer_.on("/api/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugStatusGet(request); });
+  webServer_.on("/api/debug/test", HTTP_POST, [this](AsyncWebServerRequest *request) { handleDebugTestPost(request); });
   webServer_.begin();
-  eventLog_.logf("web", "GET /api/game, /api/logs, POST /api/touch ready");
+  eventLog_.logf("web", "GET /api/game, /api/logs, /debug, POST /api/touch, /api/debug/test ready");
 
   randomSeed(esp_random());
 
@@ -620,4 +627,118 @@ void AppController::handleGameStatus(AsyncWebServerRequest *request) {
   String body;
   serializeJson(doc, body);
   request->send(200, "application/json", body);
+}
+
+// ---------------------------------------------------------------------------
+// Hardware debug page — GET /debug, GET /api/debug, POST /api/debug/test.
+// Independent of game state: lets a builder verify each component from
+// spec/components.md individually, live, without playing through the game.
+// ---------------------------------------------------------------------------
+
+void AppController::handleDebugPageGet(AsyncWebServerRequest *request) {
+  request->send(200, "text/html", kDebugPageHtml);
+}
+
+void AppController::handleDebugStatusGet(AsyncWebServerRequest *request) {
+  JsonDocument doc;
+
+  JsonObject rfid = doc["rfid"].to<JsonObject>();
+  rfid["ready"] = rfidService_.isReady();
+  rfid["lastTag"] = rfidService_.lastSeenTag();
+
+  JsonObject rtc = doc["rtc"].to<JsonObject>();
+  rtc["ready"] = rtcService_.isReady();
+  rtc["now"] = rtcService_.formattedNow();
+
+  JsonObject colorSensor = doc["colorSensor"].to<JsonObject>();
+  colorSensor["hasSignal"] = colorSensorService_.hasSignal();
+  colorSensor["label"] = colorSensorService_.detectedColorLabel();
+  colorSensor["r"] = colorSensorService_.redFrequencyHz();
+  colorSensor["g"] = colorSensorService_.greenFrequencyHz();
+  colorSensor["b"] = colorSensorService_.blueFrequencyHz();
+
+  JsonObject hidden = doc["hidden"].to<JsonObject>();
+  hidden["sensor1"] = hiddenTriggerService_.sensor1Active();
+  hidden["sensor2"] = hiddenTriggerService_.sensor2Active();
+
+  JsonObject servo = doc["servo"].to<JsonObject>();
+  servo["isOpen"] = servoService_.isOpen();
+
+  JsonObject vibration = doc["vibration"].to<JsonObject>();
+  vibration["active"] = vibrationService_.isActive();
+
+  JsonArray encoders = doc["encoders"].to<JsonArray>();
+  for (std::uint8_t i = 0; i < encoder_hw::kEncoderCount; ++i) {
+    JsonObject e = encoders.add<JsonObject>();
+    e["value"] = inputPanelService_.encoder(i).value;
+    e["buttonPressed"] = inputPanelService_.encoder(i).buttonPressed;
+  }
+
+  JsonObject tm1638 = doc["tm1638"].to<JsonObject>();
+  tm1638["buttonMask"] = inputPanelService_.ledKeyButtonMask();
+
+  JsonObject audio = doc["audio"].to<JsonObject>();
+  audio["cueSeq"] = audioCueBus_.cueSeq();
+  audio["voice0Hz"] = audioCueBus_.voiceHz(0);
+
+  String body;
+  serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
+
+void AppController::handleDebugTestPost(AsyncWebServerRequest *request) {
+  if (!request->hasParam("plain", true)) {
+    request->send(400, "application/json", "{\"error\":\"missing_body\"}");
+    return;
+  }
+
+  String body = request->getParam("plain", true)->value();
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok) {
+    request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+    return;
+  }
+
+  const char* component = doc["component"] | "";
+  const char* action = doc["action"] | "";
+
+  if (strcmp(component, "servo") == 0) {
+    if (strcmp(action, "open") == 0) {
+      servoService_.open();
+    } else if (strcmp(action, "close") == 0) {
+      servoService_.close();
+    } else {
+      request->send(400, "application/json", "{\"error\":\"unknown_action\"}");
+      return;
+    }
+  } else if (strcmp(component, "vibration") == 0 && strcmp(action, "pulse") == 0) {
+    vibrationService_.pulse(300);
+  } else if (strcmp(component, "matrix") == 0 && strcmp(action, "test") == 0) {
+    matrixService_.runTest();
+  } else if (strcmp(component, "encoderLed") == 0 && strcmp(action, "set") == 0) {
+    const int index = doc["index"] | -1;
+    if (index < 0 || index >= static_cast<int>(encoder_hw::kEncoderCount)) {
+      request->send(400, "application/json", "{\"error\":\"invalid_index\"}");
+      return;
+    }
+    const std::uint8_t r = doc["r"] | 0;
+    const std::uint8_t g = doc["g"] | 0;
+    const std::uint8_t b = doc["b"] | 0;
+    inputPanelService_.setEncoderLed(static_cast<std::uint8_t>(index), r, g, b);
+  } else if (strcmp(component, "audio") == 0) {
+    if (strcmp(action, "tone") == 0) {
+      audioCueBus_.playTone(440.0f, 500);
+    } else if (strcmp(action, "cue") == 0) {
+      audioCueBus_.playCue(protocol::AudioCueId::TestMelody);
+    } else {
+      request->send(400, "application/json", "{\"error\":\"unknown_action\"}");
+      return;
+    }
+  } else {
+    request->send(400, "application/json", "{\"error\":\"unknown_component\"}");
+    return;
+  }
+
+  eventLog_.logf("debug", "test %s.%s", component, action);
+  request->send(200, "application/json", "{\"ok\":true}");
 }

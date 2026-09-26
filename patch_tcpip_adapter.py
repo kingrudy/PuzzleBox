@@ -19,7 +19,7 @@ def patch_tcpip_adapter(*args, **kwargs):
     
     platform_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
     if not platform_dir:
-        print("⚠ Warning: Could not find framework-arduinoespressif32 package")
+        print("WARNING: Could not find framework-arduinoespressif32 package")
         return
     
     print(f"Platform dir: {platform_dir}")
@@ -45,7 +45,7 @@ def patch_tcpip_adapter(*args, **kwargs):
         
         # Check if already patched
         if 'BOXBOX_PATCHED' in content:
-            print(f"    ✓ {chip} already patched")
+            print(f"    OK: {chip} already patched")
             continue
         
         # Strategy: Comment out the two problematic function declarations
@@ -66,7 +66,7 @@ def patch_tcpip_adapter(*args, **kwargs):
         with open(header_path, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        print(f"    ✓ Successfully patched {chip}")
+        print(f"    OK: Successfully patched {chip}")
     
     print("=" * 60)
 

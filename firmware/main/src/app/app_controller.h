@@ -47,6 +47,9 @@ class AppController {
   void handleGameStatus(AsyncWebServerRequest *request);
   void handleTouchPost(AsyncWebServerRequest *request);
   void handleLogsGet(AsyncWebServerRequest *request);
+  void handleDebugPageGet(AsyncWebServerRequest *request);
+  void handleDebugStatusGet(AsyncWebServerRequest *request);
+  void handleDebugTestPost(AsyncWebServerRequest *request);
 
   void tickSetup();
   void tickPuzzleSelection();

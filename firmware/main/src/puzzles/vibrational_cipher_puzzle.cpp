@@ -83,6 +83,12 @@ void VibrationalCipherPuzzle::poll(puzzles::PuzzleContext& ctx) {
             phase_ = Phase::kInput;
             inputIndex_ = 0;
             phaseStartMs_ = ctx.nowMs;
+            // Discard any button presses queued while STBY/XMIT wasn't
+            // listening (e.g. an eager press mid-transmission) so they
+            // don't get replayed as the first digit(s) once INPT starts.
+            std::uint8_t discard;
+            while (ctx.panel.takeLedKeyButtonPress(discard)) {
+            }
           } else {
             phase_ = Phase::kDigitGap;
             phaseStartMs_ = ctx.nowMs;
