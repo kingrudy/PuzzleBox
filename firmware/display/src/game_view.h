@@ -63,6 +63,7 @@ class GameView {
   void buildTetrisScreen();
   void buildGenericPuzzleScreen();
   void buildHighscoreEntryScreen();
+  void buildDebugScreen();
 
   // --- per-poll widget updates ---
   void updateSetupScreen();
@@ -75,6 +76,7 @@ class GameView {
   void updateSuccessScreen();
   void updateHighscoreEntryScreen();
   void updateHighscoreRows(std::array<lv_obj_t*, 5>& rows);
+  void updateDebugScreen();
 
   void gridCellRect(std::uint8_t cell, int& x, int& y, int& w, int& h) const;
   void postGridTouch(std::uint8_t cell);
@@ -91,6 +93,7 @@ class GameView {
 
   // --- parsed /api/game state ---
   protocol::GameState state_ = protocol::GameState::Boot;
+  bool debugTestPatternActive_ = false;
   String puzzleId_;
   std::uint32_t remainingSeconds_ = 0;
   std::uint32_t selectedLimitSeconds_ = 0;
@@ -148,6 +151,7 @@ class GameView {
   lv_obj_t* successScreen_ = nullptr;
   lv_obj_t* highscoreEntryScreen_ = nullptr;
   lv_obj_t* timeoutScreen_ = nullptr;
+  lv_obj_t* debugScreen_ = nullptr;
 
   // --- dynamic widgets, updated every poll ---
   lv_obj_t* setupTimerLabel_ = nullptr;
@@ -174,6 +178,8 @@ class GameView {
   lv_obj_t* hsLettersLabel_ = nullptr;
   lv_obj_t* hsScoreLabel_ = nullptr;
   std::array<lv_obj_t*, kHighscoreShown> hsHighscoreRows_{};
+
+  lv_obj_t* debugTouchLabel_ = nullptr;
 
   // --- redraw bookkeeping ---
   bool connected_ = false;

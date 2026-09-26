@@ -120,7 +120,12 @@ async function refresh() {
   }).join('');
   html += card('tm1638', 'TM1638 LED&amp;KEY', 'connected', `
     ${buttonRows}
-    <div class="note">Bit n van de ruwe mask = fysieke knop S(n+1) (zie spec/puzzlebox_hw.md &sect;4.4).</div>
+    <div class="row"><span>Digit/LED-testpatroon</span><span class="val ${d.tm1638.displayTestActive ? 'on' : 'off'}">${d.tm1638.displayTestActive ? 'AAN' : 'uit'}</span></div>
+    <div class="btns">
+      <button onclick="post('tm1638Display','on')">Testpatroon AAN</button>
+      <button onclick="post('tm1638Display','off')">Terug naar normaal</button>
+    </div>
+    <div class="note">AAN toont "12345678" + alle 8 LED's; controleer elk cijfer en elke LED. Bit n van de knoppen-mask = fysieke knop S(n+1) (zie spec/puzzlebox_hw.md &sect;4.4).</div>
   `);
 
   for (let i = 0; i < d.encoders.length; i++) {
@@ -177,6 +182,15 @@ async function refresh() {
       <button onclick="post('audio','cue')">Test cue</button>
     </div>
     <div class="note">De main controller heeft geen speaker &mdash; hoorbaar via het display-bord (s3_display), alleen als dat online is.</div>
+  `);
+
+  html += card('display', 'Main Display (s3_display)', 'connected', `
+    <div class="row"><span>Testpatroon</span><span class="val ${d.display.testPatternActive ? 'on' : 'off'}">${d.display.testPatternActive ? 'AAN' : 'uit'}</span></div>
+    <div class="btns">
+      <button onclick="post('display','on')">Testpatroon AAN</button>
+      <button onclick="post('display','off')">Terug naar normaal</button>
+    </div>
+    <div class="note">AAN toont rood/groen/blauw/wit-balken + live aanraakco&ouml;rdinaten op het 800x480-scherm. Alleen zichtbaar als het display-bord online is en /api/game pollt (duurt tot ~1s na de knop).</div>
   `);
 
   $('grid').innerHTML = html;

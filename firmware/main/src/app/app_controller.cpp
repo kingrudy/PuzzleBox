@@ -548,6 +548,7 @@ void AppController::handleLogsGet(AsyncWebServerRequest *request) {
 void AppController::handleGameStatus(AsyncWebServerRequest *request) {
   JsonDocument doc;
   doc["state"] = static_cast<int>(state_);
+  doc["debugTestPattern"] = debugMainDisplayTestActive_;
   doc["remainingSeconds"] = remainingSeconds_;
   doc["selectedLimitSeconds"] = selectedLimitSeconds_;
   std::uint32_t countdownRemaining = 0;
@@ -683,10 +684,14 @@ void AppController::handleDebugStatusGet(AsyncWebServerRequest *request) {
 
   JsonObject tm1638 = doc["tm1638"].to<JsonObject>();
   tm1638["buttonMask"] = inputPanelService_.ledKeyButtonMask();
+  tm1638["displayTestActive"] = inputPanelService_.debugOverrideActive();
 
   JsonObject audio = doc["audio"].to<JsonObject>();
   audio["cueSeq"] = audioCueBus_.cueSeq();
   audio["voice0Hz"] = audioCueBus_.voiceHz(0);
+
+  JsonObject display = doc["display"].to<JsonObject>();
+  display["testPatternActive"] = debugMainDisplayTestActive_;
 
   String body;
   serializeJson(doc, body);
@@ -704,7 +709,9 @@ void AppController::handleDebugTestJson(AsyncWebServerRequest *request, JsonVari
       (strcmp(component, "vibration") == 0 && strcmp(action, "pulse") == 0) ||
       (strcmp(component, "matrix") == 0 && strcmp(action, "test") == 0) ||
       (strcmp(component, "encoderLed") == 0 && strcmp(action, "set") == 0) ||
-      (strcmp(component, "audio") == 0 && (strcmp(action, "tone") == 0 || strcmp(action, "cue") == 0));
+      (strcmp(component, "audio") == 0 && (strcmp(action, "tone") == 0 || strcmp(action, "cue") == 0)) ||
+      (strcmp(component, "display") == 0 && (strcmp(action, "on") == 0 || strcmp(action, "off") == 0)) ||
+      (strcmp(component, "tm1638Display") == 0 && (strcmp(action, "on") == 0 || strcmp(action, "off") == 0));
   if (!known) {
     request->send(400, "application/json", "{\"error\":\"unknown_component_or_action\"}");
     return;
@@ -755,6 +762,14 @@ void AppController::applyPendingDebugTest() {
       audioCueBus_.playTone(440.0f, 500);
     } else {
       audioCueBus_.playCue(protocol::AudioCueId::TestMelody);
+    }
+  } else if (strcmp(component, "display") == 0) {
+    debugMainDisplayTestActive_ = strcmp(action, "on") == 0;
+  } else if (strcmp(component, "tm1638Display") == 0) {
+    if (strcmp(action, "on") == 0) {
+      inputPanelService_.runDisplayTest();
+    } else {
+      inputPanelService_.setDebugOverrideActive(false);
     }
   }
 

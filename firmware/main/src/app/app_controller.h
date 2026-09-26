@@ -155,6 +155,8 @@ class AppController {
     std::uint8_t b = 0;
   };
   PendingDebugTest pendingDebugTest_;
+  // Persistent (not one-shot) test toggles, applied from applyPendingDebugTest():
+  bool debugMainDisplayTestActive_ = false;  // relayed to s3_display via /api/game
 
   AsyncWebServer webServer_{80};
 };

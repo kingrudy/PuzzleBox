@@ -243,11 +243,21 @@ void InputPanelService::tm1638WriteLeds(std::uint8_t ledMask) {
 // ---------------------------------------------------------------------------
 
 void InputPanelService::setStatusLed(bool bright) {
+  if (debugOverrideActive_) return;
   tm1638SendCommand(kCmdDisplayControlBase | (bright ? kActiveBrightness : kIdleBrightness));
+}
+
+void InputPanelService::runDisplayTest() {
+  debugOverrideActive_ = true;
+  tm1638SendCommand(kCmdDisplayControlBase | kActiveBrightness);
+  const char text[8] = {'1', '2', '3', '4', '5', '6', '7', '8'};
+  tm1638WriteText(text, 0xFF);  // every digit + its decimal point
+  tm1638WriteLeds(0xFF);        // all 8 discrete LEDs
 }
 
 void InputPanelService::renderStatus(protocol::GameState state, std::uint32_t remainingSeconds,
                                       bool sidecarOnline) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kStatus;
 
   const std::uint32_t mm = (remainingSeconds / 60) % 100;
@@ -287,6 +297,7 @@ void InputPanelService::renderStatus(protocol::GameState state, std::uint32_t re
 void InputPanelService::renderPatternPuzzle(const char* phase, std::uint8_t ledMask,
                                              std::uint8_t progress, std::uint8_t targetLength,
                                              bool blinkOn) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kPatternPuzzle;
 
   char text[9] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '\0'};
@@ -307,6 +318,7 @@ void InputPanelService::renderPatternPuzzle(const char* phase, std::uint8_t ledM
 void InputPanelService::renderTetrisPuzzle(const char* phase, std::uint8_t level,
                                             std::uint8_t targetLevel, std::uint8_t ledMask,
                                             bool blinkOn) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kTetrisPuzzle;
 
   char text[9] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '\0'};
@@ -325,6 +337,7 @@ void InputPanelService::renderTetrisPuzzle(const char* phase, std::uint8_t level
 }
 
 void InputPanelService::renderSpectralTuner(std::uint8_t lockedMask, std::uint8_t encoderCount) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kSpectralTuner;
 
   std::uint8_t lockedCount = 0;
@@ -347,6 +360,7 @@ void InputPanelService::renderSpectralTuner(std::uint8_t lockedMask, std::uint8_
 
 void InputPanelService::renderCipherPuzzle(const char* phase, const std::uint8_t* enteredDigits,
                                             std::uint8_t enteredCount, std::uint8_t totalCount) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kCipherPuzzle;
 
   char text[9] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '\0'};
@@ -369,6 +383,7 @@ void InputPanelService::renderCipherPuzzle(const char* phase, const std::uint8_t
 }
 
 void InputPanelService::renderSetup(std::uint32_t selectedSeconds) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kSetup;
 
   const std::uint32_t mm = (selectedSeconds / 60) % 100;
@@ -389,6 +404,7 @@ void InputPanelService::renderSetup(std::uint32_t selectedSeconds) {
 }
 
 void InputPanelService::renderHighscoreEntry(const char letters[3], std::uint32_t scoreSeconds) {
+  if (debugOverrideActive_) return;
   mode_ = Mode::kHighscoreEntry;
 
   const std::uint32_t mm = (scoreSeconds / 60) % 100;

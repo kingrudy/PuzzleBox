@@ -69,6 +69,22 @@ class InputPanelService {
   void renderHighscoreEntry(const char letters[3], std::uint32_t scoreSeconds);
   void setStatusLed(bool bright);  // brightness 7 (active) vs 1 (idle)
 
+  // --- Debug override (used by AppController's /debug hardware test page) ---
+  // While active, every render*()/setStatusLed() call above no-ops instead of
+  // touching the TM1638, so runDisplayTest()'s pattern stays on screen
+  // instead of being overwritten by the game's own per-tick rendering.
+  void setDebugOverrideActive(bool active) {
+    if (debugOverrideActive_ && !active) {
+      // The test pattern wrote straight to the TM1638 without updating the
+      // change-gating cache below, so force the next render*() call to
+      // actually redraw instead of assuming nothing changed.
+      lastRenderedTop_ = "";
+    }
+    debugOverrideActive_ = active;
+  }
+  void runDisplayTest();  // "12345678" on all digit positions + all 8 LEDs lit
+  bool debugOverrideActive() const { return debugOverrideActive_; }
+
   // --- TM1638 buttons ---
   bool ledKeyPressed() const { return buttonMask_ != 0; }
   std::uint8_t ledKeyButtonMask() const { return buttonMask_; }
@@ -125,6 +141,7 @@ class InputPanelService {
   Adafruit_PWMServoDriver pca_{i2c_addr::kPca9685};
 
   Mode mode_ = Mode::kStatus;
+  bool debugOverrideActive_ = false;
 
   std::uint8_t buttonMask_ = 0;          // live state
   std::uint8_t pendingButtonQueue_ = 0;  // bitmask of unread presses

@@ -196,6 +196,7 @@ bool GameView::fetchStatus() {
   }
 
   state_ = static_cast<protocol::GameState>(doc["state"] | 0);
+  debugTestPatternActive_ = doc["debugTestPattern"] | false;
   puzzleId_ = doc["puzzleId"] | "";
   remainingSeconds_ = doc["remainingSeconds"] | 0;
   selectedLimitSeconds_ = doc["selectedLimitSeconds"] | 0;
@@ -312,6 +313,12 @@ void GameView::showScreen(lv_obj_t* screen) {
 }
 
 void GameView::render() {
+  if (debugTestPatternActive_) {
+    showScreen(debugScreen_);
+    updateDebugScreen();
+    return;
+  }
+
   switch (state_) {
     case protocol::GameState::Setup:
       showScreen(setupScreen_);
@@ -588,6 +595,7 @@ void GameView::buildUi() {
   }
 
   buildHighscoreEntryScreen();
+  buildDebugScreen();
 
   timeoutScreen_ = createScreen("TIJD VERSTREKEN");
   {
@@ -603,6 +611,59 @@ void GameView::buildUi() {
     lv_label_set_text(line2, "DRUK OP EEN KNOP OM OPNIEUW TE BEGINNEN");
     lv_obj_align(line2, LV_ALIGN_TOP_MID, 0, 250);
   }
+}
+
+void GameView::buildDebugScreen() {
+  debugScreen_ = createScreen("DEBUG TESTPATROON");
+
+  // Four full-width colour bands -- confirms each RGB channel and the
+  // backlight actually render correctly on real hardware, not just "the
+  // panel lights up".
+  struct Band { const char* label; lv_color_t color; };
+  const Band bands[4] = {
+      {"ROOD", lv_color_make(255, 0, 0)},
+      {"GROEN", lv_color_make(0, 255, 0)},
+      {"BLAUW", lv_color_make(0, 0, 255)},
+      {"WIT", lv_color_make(255, 255, 255)},
+  };
+  constexpr int kBandY = 60;
+  constexpr int kBandH = 70;
+  for (std::uint8_t i = 0; i < 4; ++i) {
+    lv_obj_t* band = lv_obj_create(debugScreen_);
+    lv_obj_remove_style_all(band);
+    lv_obj_set_size(band, display_board::kWidth - 40, kBandH);
+    lv_obj_set_style_bg_color(band, bands[i].color, 0);
+    lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0);
+    lv_obj_align(band, LV_ALIGN_TOP_MID, 0, kBandY + i * (kBandH + 8));
+
+    lv_obj_t* label = lv_label_create(band);
+    lv_obj_set_style_text_color(label, lv_color_make(0, 0, 0), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    lv_label_set_text(label, bands[i].label);
+    lv_obj_center(label);
+  }
+
+  debugTouchLabel_ = lv_label_create(debugScreen_);
+  lv_obj_set_style_text_color(debugTouchLabel_, lv_color_make(220, 220, 220), 0);
+  lv_obj_set_style_text_font(debugTouchLabel_, &lv_font_montserrat_28, 0);
+  lv_label_set_text(debugTouchLabel_, "Raak het scherm aan...");
+  lv_obj_align(debugTouchLabel_, LV_ALIGN_BOTTOM_MID, 0, -60);
+
+  lv_obj_t* hint = lv_label_create(debugScreen_);
+  lv_obj_set_style_text_color(hint, lv_color_make(140, 140, 150), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
+  lv_label_set_text(hint, "Uitzetten via /debug op de main controller");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -20);
+}
+
+void GameView::updateDebugScreen() {
+  lv_point_t point{0, 0};
+  const bool pressed = lvIndev_ != nullptr && lv_indev_get_state(lvIndev_) == LV_INDEV_STATE_PRESSED;
+  if (pressed) {
+    lv_indev_get_point(lvIndev_, &point);
+  }
+  lv_label_set_text_fmt(debugTouchLabel_, pressed ? "Touch: x=%d y=%d" : "Raak het scherm aan...",
+                         static_cast<int>(point.x), static_cast<int>(point.y));
 }
 
 // ---------------------------------------------------------------------------

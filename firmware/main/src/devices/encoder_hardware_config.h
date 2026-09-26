@@ -49,10 +49,15 @@ struct EncoderLedChannels {
 
 inline constexpr std::uint8_t kNoChannel = 0xFF;
 
+// Confirmed via the /debug page (setting each encoder to pure red/green
+// individually lit the opposite colour on all three): the red and green
+// legs are physically wired to swapped PCA9685 channels on this box.
+// r/g below are swapped from the naive sequential 0,1 / 2,3 / 4,5
+// assignment to compensate, so state.r really drives the red die.
 inline constexpr EncoderLedChannels kEncoderLedChannels[kEncoderCount] = {
-    {0, 1, kNoChannel, false},  // encoder 1
-    {2, 3, kNoChannel, false},  // encoder 2
-    {4, 5, 6, true},            // encoder 3
+    {1, 0, kNoChannel, false},  // encoder 1
+    {3, 2, kNoChannel, false},  // encoder 2
+    {5, 4, 6, true},            // encoder 3
 };
 // Channels 7-15 are free.
 
