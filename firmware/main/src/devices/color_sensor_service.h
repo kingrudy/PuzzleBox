@@ -1,0 +1,47 @@
+#pragma once
+
+#include <cstdint>
+
+// TCS3200/TCS230 colour sensor. S0/S1/OE are hard-strapped in hardware (20%
+// output scaling, always enabled) — see spec/puzzlebox_hw.md section 4.7
+// for the full strapping table and the GPIO0/GPIO2 boot-strap warning.
+//
+// Not yet bound to a puzzle; reported in diagnostics only.
+class ColorSensorService {
+ public:
+  enum class Color {
+    kWhite,
+    kYellow,
+    kRed,
+    kGreen,
+    kBlue,
+    kUnknown,
+    kNoSignal,
+  };
+
+  void begin();
+  void poll();  // every loop, self-rate-limited to 250ms
+
+  bool hasSignal() const { return color_ != Color::kNoSignal; }
+  Color detectedColor() const { return color_; }
+  const char* detectedColorLabel() const;
+
+  std::uint32_t redFrequencyHz() const { return redHz_; }
+  std::uint32_t greenFrequencyHz() const { return greenHz_; }
+  std::uint32_t blueFrequencyHz() const { return blueHz_; }
+
+ private:
+  static constexpr std::uint32_t kSampleIntervalMs = 250;
+  static constexpr std::uint32_t kPulseTimeoutUs = 8000;
+  static constexpr std::uint32_t kFilterSettleUs = 300;
+  static constexpr std::uint32_t kSignalFloorHz = 40;
+
+  std::uint32_t measureFrequency(bool s2High, bool s3High);
+  Color classify(std::uint32_t r, std::uint32_t g, std::uint32_t b) const;
+
+  std::uint32_t redHz_ = 0;
+  std::uint32_t greenHz_ = 0;
+  std::uint32_t blueHz_ = 0;
+  Color color_ = Color::kNoSignal;
+  unsigned long lastSampleMs_ = 0;
+};
