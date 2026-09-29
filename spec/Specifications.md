@@ -64,10 +64,30 @@ observing the opposite color light up, on all three encoders.
 every cycle — burning ~38% of main-loop time on a sensor that isn't there.
 
 **Fix:** after `kNoSignalStreakForBackoff` (4) consecutive `NoSignal` reads, the poll
-interval backs off from 250ms to `kBackoffIntervalMs` (3000ms) — self-healing the instant a
+interval backs off from 250ms to `kBackoffIntervalMs` — self-healing the instant a
 real signal appears (any successful read resets the streak).
 [firmware/main/src/devices/color_sensor_service.{h,cpp}](../firmware/main/src/devices/color_sensor_service.h).
 No behavior change while the sensor is actually connected.
+
+**Follow-up (measured):** the `[diag] worstLoopUs` serial line showed a ~102ms loop stall in
+every 5s window even with the 3000ms backoff — once network latency to the display was fixed,
+this was the dominant remaining source of Setup-screen encoder lag. Backoff raised to
+15000ms; `worstLoopUs` dropped to ~4.9ms (the one remaining ~102ms hit is within the first
+~1s after boot, before the streak reaches 4). Use the `[diag]` line (5s interval, main
+controller serial) as the first check for any "screen feels laggy" report.
+
+### Rotary encoder `value` counts quadrature edges, not detents
+
+`InputPanelService::EncoderState::value` increments per A/B edge (`kQuadratureDelta`), and a
+mechanical detent on these encoders fires 4 edges. Setup, puzzle selection and highscore
+letters originally applied a full step per raw edge, so one click could apply up to 4x its
+step in separate loop iterations (jumpy/imprecise). `AppController::kEncoderCountsPerDetent
+= 4` now divides the delta, and the baseline advances only by the consumed multiple so a
+partial turn carries over instead of being lost. Any new discrete-stepping encoder consumer
+must do the same.
+[firmware/main/src/app/app_controller.{h,cpp}](../firmware/main/src/app/app_controller.h).
+The analog-style consumers (Spectral Tuner, Living Interval) read `value` continuously and
+are unaffected.
 
 ### WiFi AP power-save
 
@@ -163,6 +183,52 @@ caught (see it work correctly, then find `GameView` not using the same constants
 Same fix as the main controller: `WiFi.setSleep(false)` right after `WiFi.mode(WIFI_STA)`
 in `main.cpp`, before `WiFi.begin()`.
 [firmware/display/src/main.cpp](../firmware/display/src/main.cpp).
+
+### Status feed: direct UART link main controller -> display (replaces the WebSocket push)
+
+**Why:** the 750ms HTTP poll made Setup-screen encoder feedback visibly laggy next to the
+TM1638. A WebSocket push (tried first) got closer but still carried WiFi latency, and
+`links2004/WebSockets`' `loop()` does a **blocking** TCP connect (`WEBSOCKETS_TCP_TIMEOUT` =
+5000ms) — called from the main loop it froze rendering/touch for seconds on any hiccup. A
+FreeRTOS task fixed the freeze but not the latency. Wired UART is **hardware-confirmed
+instant**; the WS client/server code was removed.
+
+**Wiring (3 wires):** main controller GPIO33 (TX) -> display GPIO12 (RX); main GPIO32 (RX)
+<- display GPIO13 (TX); GND to GND (the display's SPI header has no GND — take it from
+another GND point, e.g. the UART0 header). GPIO12/13 are the TF/SD-card SPI SCLK/MISO on
+the header labelled 19/11/12/13; the firmware never initialises the SD slot, so they're
+free **as long as no SD card is inserted**. Do NOT use 17/18 (I2S audio), 19/20 (touch I2C),
+or RX0/TX0 (GPIO43/44 — the CH340 USB-serial used for flashing/logs).
+
+**Protocol:** `AppController::pushGameStatusOverUart()` writes the same JSON as `GET
+/api/game`, one line per snapshot (`println`), every 10ms at 921600 baud. The display frames
+on `\n`; a torn line fails `deserializeJson` and the next line resyncs. HTTP `GET /api/game`
+(750ms) stays as the connectivity-health fallback; touch, logs and `/debug` stay on WiFi.
+
+**Gotchas found on hardware:**
+- The Arduino-ESP32 UART RX ring buffer defaults to **256 bytes**, smaller than one status
+  line — ~2/3 of lines arrived torn. `mainUart_.setRxBufferSize(8192)` before `begin()`
+  fixed it (now ~96% of lines OK; the rest are dropped harmlessly).
+- Render once per drain (newest line wins), not once per received line.
+- Diagnostics: the display prints `[uart] bytes= linesOk= linesBad=` every 5s, but on
+  **`Serial0`** (UART0 / CH340, COM4) — see the next entry.
+[firmware/main/src/app/app_controller.cpp](../firmware/main/src/app/app_controller.cpp)
+(`pushGameStatusOverUart`),
+[firmware/display/src/game_view.cpp](../firmware/display/src/game_view.cpp)
+(`GameView::pollMainUart`).
+
+### Status snapshots carry a `seq`; the display drops stale ones
+
+Two transports (UART/WS push and HTTP poll) racing means an older snapshot can arrive after
+a newer one and stomp it back (seen as the Setup time flickering 15 <-> 30 on a fast
+encoder turn). `buildGameStatusJson()` stamps a monotonic `seq`;
+`GameView::applyGameStatus()` ignores anything below the highest `seq` already applied.
+
+### `Serial` on the display is native USB-CDC, not the CH340
+
+`boards/esp32-8048S050C.json` sets `ARDUINO_USB_CDC_ON_BOOT=1`, so `Serial.printf` output
+goes to the S3's native USB (GPIO19/20 — which this board wires to touch), not to COM4.
+COM4 only shows the ROM boot banner. Use `Serial0` for anything you want to read over COM4.
 
 ---
 

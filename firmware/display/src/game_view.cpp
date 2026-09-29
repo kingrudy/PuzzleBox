@@ -140,6 +140,16 @@ void GameView::begin(DisplaySpeakerService& speaker, TouchService& touch) {
   buildUi();
   currentScreen_ = defaultScreen_;
   lv_scr_load(defaultScreen_);
+
+  // Supplementary push channel -- see the comment on mainUart_ in
+  // game_view.h.
+  Serial0.begin(115200);
+  // Default RX ring buffer is 256 bytes, smaller than one status line --
+  // hardware-confirmed: most lines arrived torn (bytes dropped while the
+  // main loop was busy rendering). Must be set before begin().
+  mainUart_.setRxBufferSize(8192);
+  mainUart_.begin(921600, SERIAL_8N1, kMainUartRxPin, kMainUartTxPin);
+  uartLineBuf_.reserve(768);  // comfortably larger than one game-status line
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +212,19 @@ bool GameView::fetchStatus() {
     return false;
   }
 
+  applyGameStatus(doc);
+  return true;
+}
+
+void GameView::applyGameStatus(JsonDocument& doc) {
+  const std::uint32_t seq = doc["seq"] | 0;
+  if (seq != 0 && lastAppliedStatusSeq_ != 0 && seq < lastAppliedStatusSeq_) {
+    return;  // arrived after a newer snapshot was already applied -- drop it (see lastAppliedStatusSeq_)
+  }
+  if (seq != 0) {
+    lastAppliedStatusSeq_ = seq;
+  }
+
   state_ = static_cast<protocol::GameState>(doc["state"] | 0);
   debugTestPatternActive_ = doc["debugTestPattern"] | false;
   puzzleId_ = doc["puzzleId"] | "";
@@ -233,9 +256,8 @@ bool GameView::fetchStatus() {
   gridCursor_ = doc["grid"]["cursor"] | 0;
   gridLockedMask_ = doc["grid"]["lockedMask"] | 0;
 
-  tetrisLevel_ = doc["tetris"]["level"] | 1;
-  tetrisTargetLevel_ = doc["tetris"]["targetLevel"] | 3;
-  tetrisStability_ = doc["tetris"]["stability"] | 1.0f;
+  tetrisLinesCleared_ = doc["tetris"]["linesCleared"] | 0;
+  tetrisTargetLines_ = doc["tetris"]["targetLines"] | 10;
   tetrisPaused_ = doc["tetris"]["paused"] | false;
   JsonArray boardRows = doc["tetris"]["board"];
   std::uint8_t r = 0;
@@ -281,12 +303,11 @@ bool GameView::fetchStatus() {
       ++v;
     }
   }
-
-  return true;
 }
 
 void GameView::poll() {
   lv_timer_handler();  // LVGL needs frequent ticks for input/animation, independent of the network poll below
+  pollMainUart();       // never blocks -- just drains whatever's already in the UART FIFO, if anything
 
   // The touch-dot readout needs to track a fast, brief tap -- refresh it
   // every call (i.e. every loop() iteration), not just once per (now much
@@ -331,6 +352,55 @@ void GameView::showScreen(lv_obj_t* screen) {
   if (currentScreen_ != screen) {
     currentScreen_ = screen;
     lv_scr_load(screen);
+  }
+}
+
+void GameView::pollMainUart() {
+  // available()/read() only ever look at bytes the UART hardware already
+  // has buffered -- neither can block, so this is safe to call straight
+  // from the main/LVGL loop (see the comment on mainUart_ in game_view.h).
+  static constexpr std::size_t kMaxUartLineLength = 2048;
+  const std::uint32_t nowMs = millis();
+  if (nowMs - lastUartDiagMs_ >= 5000) {
+    lastUartDiagMs_ = nowMs;
+    Serial0.printf("[uart] bytes=%u linesOk=%u linesBad=%u\n", uartBytes_, uartLinesOk_, uartLinesBad_);
+  }
+
+  bool appliedAny = false;
+  while (mainUart_.available() > 0) {
+    const char c = static_cast<char>(mainUart_.read());
+    ++uartBytes_;
+    if (c == '\r') {
+      continue;  // println() on the main controller sends "\r\n"
+    }
+    if (c != '\n') {
+      uartLineBuf_ += c;
+      if (uartLineBuf_.length() > kMaxUartLineLength) {
+        uartLineBuf_ = "";  // corrupted/overlong line -- resync on the next '\n'
+      }
+      continue;
+    }
+
+    if (uartLineBuf_.length() > 0) {
+      JsonDocument doc;
+      if (deserializeJson(doc, uartLineBuf_) == DeserializationError::Ok) {
+        ++uartLinesOk_;
+        applyGameStatus(doc);
+        consecutiveFailures_ = 0;
+        connected_ = true;
+        appliedAny = true;
+      } else {
+        ++uartLinesBad_;
+      }
+      uartLineBuf_ = "";
+    }
+  }
+
+  // Render once per drain, not per line -- if several lines backed up while
+  // the loop was busy, only the newest matters (applyGameStatus() already
+  // keeps the highest seq), and each render() is a full widget refresh.
+  if (appliedAny) {
+    render();  // don't wait for the next HTTP-poll tick -- that's the whole point of this channel
   }
 }
 
@@ -383,6 +453,8 @@ void GameView::render() {
       showScreen(defaultScreen_);
       break;
   }
+
+  updatePersistentTimer();
 }
 
 // ---------------------------------------------------------------------------
@@ -507,30 +579,11 @@ void GameView::buildTetrisScreen() {
 
   const int kMeterX = kBoardX + boardW + 60;
   const int kMeterY = kBoardY;
-  constexpr int kMeterW = 240;
-  constexpr int kMeterH = 40;
 
-  tetrisStabilityBar_ = lv_bar_create(tetrisScreen_);
-  lv_obj_set_pos(tetrisStabilityBar_, kMeterX, kMeterY);
-  lv_obj_set_size(tetrisStabilityBar_, kMeterW, kMeterH);
-  lv_bar_set_range(tetrisStabilityBar_, 0, 1000);
-  lv_obj_set_style_radius(tetrisStabilityBar_, 0, LV_PART_MAIN);
-  lv_obj_set_style_radius(tetrisStabilityBar_, 0, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(tetrisStabilityBar_, bgColor(), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(tetrisStabilityBar_, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_border_width(tetrisStabilityBar_, 2, LV_PART_MAIN);
-  lv_obj_set_style_border_color(tetrisStabilityBar_, lv_color_make(90, 90, 110), LV_PART_MAIN);
-
-  lv_obj_t* stabilityLabel = lv_label_create(tetrisScreen_);
-  lv_obj_set_style_text_color(stabilityLabel, lv_color_make(200, 200, 220), 0);
-  lv_obj_set_style_text_font(stabilityLabel, &lv_font_montserrat_20, 0);
-  lv_label_set_text(stabilityLabel, "STABILITEIT");
-  lv_obj_set_pos(stabilityLabel, kMeterX, kMeterY + kMeterH + 16);
-
-  tetrisLevelLabel_ = lv_label_create(tetrisScreen_);
-  lv_obj_set_style_text_color(tetrisLevelLabel_, lv_color_make(220, 220, 230), 0);
-  lv_obj_set_style_text_font(tetrisLevelLabel_, &lv_font_montserrat_28, 0);
-  lv_obj_set_pos(tetrisLevelLabel_, kMeterX, kMeterY + 90);
+  tetrisLinesLabel_ = lv_label_create(tetrisScreen_);
+  lv_obj_set_style_text_color(tetrisLinesLabel_, lv_color_make(220, 220, 230), 0);
+  lv_obj_set_style_text_font(tetrisLinesLabel_, &lv_font_montserrat_28, 0);
+  lv_obj_set_pos(tetrisLinesLabel_, kMeterX, kMeterY);
 
   tetrisPausedLabel_ = lv_label_create(tetrisScreen_);
   lv_obj_set_style_text_color(tetrisPausedLabel_, lv_color_make(255, 200, 0), 0);
@@ -633,6 +686,40 @@ void GameView::buildUi() {
     lv_label_set_text(line2, "DRUK OP EEN KNOP OM OPNIEUW TE BEGINNEN");
     lv_obj_align(line2, LV_ALIGN_TOP_MID, 0, 250);
   }
+
+  // Persistent room-clock overlay, built on the top layer (not any one
+  // screen) so it survives lv_scr_load() and stays visible across every
+  // puzzle screen -- previously the clock was only ever shown on the
+  // Setup/Countdown/Success screens, disappearing the moment a puzzle
+  // started. Shown only while state_ == Active (see updatePersistentTimer());
+  // Setup/Countdown/Success/HighscoreEntry each already have their own
+  // dedicated time display.
+  persistentTimerPanel_ = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(persistentTimerPanel_);
+  lv_obj_set_style_bg_color(persistentTimerPanel_, lv_color_make(0, 0, 0), 0);
+  lv_obj_set_style_bg_opa(persistentTimerPanel_, LV_OPA_70, 0);
+  lv_obj_set_style_radius(persistentTimerPanel_, 6, 0);
+  lv_obj_set_size(persistentTimerPanel_, 110, 44);
+  lv_obj_align(persistentTimerPanel_, LV_ALIGN_TOP_RIGHT, -12, 12);
+  lv_obj_clear_flag(persistentTimerPanel_, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(persistentTimerPanel_, LV_OBJ_FLAG_HIDDEN);
+
+  persistentTimerLabel_ = lv_label_create(persistentTimerPanel_);
+  lv_obj_set_style_text_color(persistentTimerLabel_, lv_color_make(255, 220, 80), 0);
+  lv_obj_set_style_text_font(persistentTimerLabel_, &lv_font_montserrat_28, 0);
+  lv_obj_center(persistentTimerLabel_);
+}
+
+void GameView::updatePersistentTimer() {
+  if (state_ != protocol::GameState::Active) {
+    lv_obj_add_flag(persistentTimerPanel_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_obj_clear_flag(persistentTimerPanel_, LV_OBJ_FLAG_HIDDEN);
+  const std::uint32_t mm = (remainingSeconds_ / 60) % 100;
+  const std::uint32_t ss = remainingSeconds_ % 60;
+  lv_label_set_text_fmt(persistentTimerLabel_, "%02u:%02u", static_cast<unsigned>(mm),
+                         static_cast<unsigned>(ss));
 }
 
 void GameView::buildDebugScreen() {
@@ -858,10 +945,7 @@ void GameView::updateTetrisScreen() {
     lv_canvas_finish_layer(tetrisCanvas_, &layer);
   }
 
-  lv_bar_set_value(tetrisStabilityBar_, static_cast<std::int32_t>(tetrisStability_ * 1000.0f), LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(tetrisStabilityBar_, lerpColor(220, 0, 0, 0, 220, 0, tetrisStability_), LV_PART_INDICATOR);
-
-  lv_label_set_text_fmt(tetrisLevelLabel_, "NIVEAU %u/%u", tetrisLevel_, tetrisTargetLevel_);
+  lv_label_set_text_fmt(tetrisLinesLabel_, "REGELS %u/%u", tetrisLinesCleared_, tetrisTargetLines_);
 
   if (tetrisPaused_) {
     lv_obj_clear_flag(tetrisPausedLabel_, LV_OBJ_FLAG_HIDDEN);

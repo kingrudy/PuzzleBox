@@ -46,6 +46,10 @@ void AppController::begin() {
   inputPanelService_.begin();
   eventLog_.logf("input_panel", "MCP23017 ready, 3 encoders configured");
 
+  displayUart_.begin(921600, SERIAL_8N1, pins::kDisplayUartRx, pins::kDisplayUartTx);
+  eventLog_.logf("uart", "display link ready on GPIO%u/%u @ 921600", pins::kDisplayUartRx,
+                 pins::kDisplayUartTx);
+
   highscoreService_.begin();
   eventLog_.logf("highscore", "%u entries loaded from NVS", highscoreService_.count());
 
@@ -55,7 +59,9 @@ void AppController::begin() {
   eventLog_.logf("web", "AP ready on %s", config::kMainControllerIp);
 
   webServer_.on("/api/game", HTTP_GET, [this](AsyncWebServerRequest *request) { handleGameStatus(request); });
-  webServer_.on("/api/touch", HTTP_POST, [this](AsyncWebServerRequest *request) { handleTouchPost(request); });
+  auto* touchHandler = new AsyncCallbackJsonWebHandler(
+      "/api/touch", [this](AsyncWebServerRequest *request, JsonVariant &json) { handleTouchJson(request, json); });
+  webServer_.addHandler(touchHandler);
   webServer_.on("/api/logs", HTTP_GET, [this](AsyncWebServerRequest *request) { handleLogsGet(request); });
   webServer_.on("/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugPageGet(request); });
   webServer_.on("/api/debug", HTTP_GET, [this](AsyncWebServerRequest *request) { handleDebugStatusGet(request); });
@@ -94,6 +100,12 @@ void AppController::tick() {
   if (pendingDebugTest_.pending) {
     applyPendingDebugTest();
     pendingDebugTest_.pending = false;
+  }
+
+  const std::uint32_t nowMs = millis();
+  if (nowMs - lastUartPushMs_ >= kUartPushIntervalMs) {
+    lastUartPushMs_ = nowMs;
+    pushGameStatusOverUart();
   }
 
   const std::uint32_t loopUs = micros() - loopStartUs;
@@ -142,14 +154,15 @@ void AppController::tick() {
 // ---------------------------------------------------------------------------
 
 void AppController::tickSetup() {
-  const std::int32_t steps = inputPanelService_.encoder(0).value - setupEncoderBaseline_;
+  const std::int32_t rawDelta = inputPanelService_.encoder(0).value - setupEncoderBaseline_;
+  const std::int32_t steps = rawDelta / kEncoderCountsPerDetent;
   if (steps != 0) {
     std::int32_t newLimit = static_cast<std::int32_t>(selectedLimitSeconds_) +
                              steps * static_cast<std::int32_t>(kLimitStepSeconds);
     newLimit = constrain(newLimit, static_cast<std::int32_t>(kMinLimitSeconds),
                           static_cast<std::int32_t>(kMaxLimitSeconds));
     selectedLimitSeconds_ = static_cast<std::uint32_t>(newLimit);
-    setupEncoderBaseline_ = inputPanelService_.encoder(0).value;
+    setupEncoderBaseline_ += steps * kEncoderCountsPerDetent;
     audioCueBus_.playTone(320.0f + selectedLimitSeconds_ * 0.1f, 60);
   }
 
@@ -182,12 +195,13 @@ void AppController::tickSetup() {
 // ---------------------------------------------------------------------------
 
 void AppController::tickPuzzleSelection() {
-  const std::int32_t steps = inputPanelService_.encoder(0).value - puzzleSelectionEncoderBaseline_;
+  const std::int32_t rawDelta = inputPanelService_.encoder(0).value - puzzleSelectionEncoderBaseline_;
+  const std::int32_t steps = rawDelta / kEncoderCountsPerDetent;
   if (steps != 0) {
     std::int32_t newIndex = static_cast<std::int32_t>(selectedPuzzleIndex_) + steps;
     newIndex = constrain(newIndex, 0, static_cast<std::int32_t>(protocol::kPuzzleCount - 1));
     selectedPuzzleIndex_ = static_cast<std::uint8_t>(newIndex);
-    puzzleSelectionEncoderBaseline_ = inputPanelService_.encoder(0).value;
+    puzzleSelectionEncoderBaseline_ += steps * kEncoderCountsPerDetent;
     audioCueBus_.playTone(400.0f + selectedPuzzleIndex_ * 50.0f, 60);
   }
 
@@ -436,14 +450,15 @@ void AppController::tickSuccess() {
 
 void AppController::tickHighscoreEntry() {
   for (std::uint8_t i = 0; i < 3; ++i) {
-    const std::int32_t delta = inputPanelService_.encoder(i).value - highscoreEncoderBaseline_[i];
+    const std::int32_t rawDelta = inputPanelService_.encoder(i).value - highscoreEncoderBaseline_[i];
+    const std::int32_t delta = rawDelta / kEncoderCountsPerDetent;
     if (delta != 0) {
       std::int32_t letterIndex = (highscoreLetters_[i] - 'A' + delta) % 26;
       if (letterIndex < 0) {
         letterIndex += 26;
       }
       highscoreLetters_[i] = static_cast<char>('A' + letterIndex);
-      highscoreEncoderBaseline_[i] = inputPanelService_.encoder(i).value;
+      highscoreEncoderBaseline_[i] += delta * kEncoderCountsPerDetent;
       audioCueBus_.playTone(400.0f + letterIndex * 12.0f, 60);
     }
   }
@@ -506,18 +521,8 @@ puzzles::Puzzle* AppController::currentPuzzleForStatus() const {
   return currentPuzzle_;
 }
 
-void AppController::handleTouchPost(AsyncWebServerRequest *request) {
-  if (!request->hasParam("plain", true)) {
-    request->send(400, "application/json", "{\"error\":\"missing_body\"}");
-    return;
-  }
-
-  String body = request->getParam("plain", true)->value();
-  JsonDocument doc;
-  if (deserializeJson(doc, body) != DeserializationError::Ok) {
-    request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
-    return;
-  }
+void AppController::handleTouchJson(AsyncWebServerRequest *request, JsonVariant &json) {
+  JsonObject doc = json.as<JsonObject>();
 
   const int cell = doc["cell"] | -1;
   if (cell < 0 || cell > 255) {
@@ -527,6 +532,7 @@ void AppController::handleTouchPost(AsyncWebServerRequest *request) {
 
   touchCellIndex_ = static_cast<std::uint8_t>(cell);
   touchPending_ = true;
+  eventLog_.logf("touch", "cell=%u", touchCellIndex_);
   request->send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -547,7 +553,14 @@ void AppController::handleLogsGet(AsyncWebServerRequest *request) {
 }
 
 void AppController::handleGameStatus(AsyncWebServerRequest *request) {
+  String body;
+  buildGameStatusJson(body);
+  request->send(200, "application/json", body);
+}
+
+void AppController::buildGameStatusJson(String& out) {
   JsonDocument doc;
+  doc["seq"] = ++statusSeq_;
   doc["state"] = static_cast<int>(state_);
   doc["debugTestPattern"] = debugMainDisplayTestActive_;
   doc["remainingSeconds"] = remainingSeconds_;
@@ -597,9 +610,8 @@ void AppController::handleGameStatus(AsyncWebServerRequest *request) {
     grid["lockedMask"] = resonantGridPuzzle_.lockedMask();
   } else if (active == &tetrisPuzzle_) {
     JsonObject tetris = doc["tetris"].to<JsonObject>();
-    tetris["level"] = tetrisPuzzle_.level();
-    tetris["targetLevel"] = tetrisPuzzle_.targetLevel();
-    tetris["stability"] = tetrisPuzzle_.stability01();
+    tetris["linesCleared"] = tetrisPuzzle_.linesCleared();
+    tetris["targetLines"] = tetrisPuzzle_.targetLines();
     tetris["paused"] = tetrisPuzzle_.paused();
     JsonArray rows = tetris["board"].to<JsonArray>();
     for (std::uint8_t r = 0; r < TetrisPuzzle::kHeight; ++r) {
@@ -633,9 +645,17 @@ void AppController::handleGameStatus(AsyncWebServerRequest *request) {
     doc["score"] = lastScoreSeconds_;
   }
 
+  serializeJson(doc, out);
+}
+
+void AppController::pushGameStatusOverUart() {
   String body;
-  serializeJson(doc, body);
-  request->send(200, "application/json", body);
+  buildGameStatusJson(body);
+  // println(), not print(): the display frames lines on '\n' (see
+  // GameView's UART receive loop) -- a self-synchronizing framing where a
+  // torn/corrupted line just fails deserializeJson() and the next line
+  // recovers on its own, no handshake needed.
+  displayUart_.println(body);
 }
 
 // ---------------------------------------------------------------------------

@@ -17,31 +17,43 @@ constexpr CellArr kBaseShapes[7] = {
     {1, 2, 2, 0, 2, 1, 2, 2},  // L
 };
 
-constexpr std::uint8_t kTargetLevelByDifficulty[3] = {3, 5, 7};
-constexpr std::uint8_t kStackHeightThresholdByDifficulty[3] = {12, 10, 8};
-constexpr float kDrainPerLockByDifficulty[3] = {0.02f, 0.035f, 0.05f};
+// Target line counts are deliberately much lower than the old level-5 (=40
+// lines) requirement -- that was grindy even before auto-fall existed, and
+// is worse now that clearing lines is the whole point rather than a side
+// effect of surviving. See spec/Specifications.md.
+constexpr std::uint8_t kTargetLinesByDifficulty[3] = {6, 10, 15};
+constexpr std::uint32_t kDropIntervalMsByDifficulty[3] = {1400, 1000, 700};
+// Time penalty applied when the stack tops out (a spawning piece has
+// nowhere to go) -- replaces an earlier cosmetic "stability" meter that
+// drained on a tall stack but had no actual effect once empty.
+constexpr std::uint32_t kOverloadPenaltyMsByDifficulty[3] = {5000, 8000, 12000};
 
 constexpr std::uint8_t kSpawnCol = 3;
 }  // namespace
 
 void TetrisPuzzle::begin(puzzles::PuzzleContext& ctx, puzzles::Difficulty difficulty) {
   const std::uint8_t tier = static_cast<std::uint8_t>(difficulty);
-  targetLevel_ = kTargetLevelByDifficulty[tier];
-  drainThresholdRow_ = kStackHeightThresholdByDifficulty[tier];
-  drainRatePerLock_ = kDrainPerLockByDifficulty[tier];
+  targetLines_ = kTargetLinesByDifficulty[tier];
+  dropIntervalMs_ = kDropIntervalMsByDifficulty[tier];
+  overloadPenaltyMs_ = kOverloadPenaltyMsByDifficulty[tier];
 
   board_ = {};
   linesCleared_ = 0;
-  level_ = 1;
   score_ = 0;
-  stability_ = 1.0f;
+  pendingPenaltyMs_ = 0;
   paused_ = false;
   solved_ = false;
   puzzleStartMs_ = ctx.nowMs;
-  nextHeartbeatMs_ = ctx.nowMs;
+  nextDropMs_ = ctx.nowMs + dropIntervalMs_;
   rewardDigit_ = static_cast<std::uint8_t>(random(8));
 
   spawnPiece(ctx.nowMs);
+}
+
+std::uint32_t TetrisPuzzle::takePenaltyMs() {
+  const std::uint32_t owed = pendingPenaltyMs_;
+  pendingPenaltyMs_ = 0;
+  return owed;
 }
 
 bool TetrisPuzzle::activeCellAt(std::uint8_t row, std::uint8_t col) const {
@@ -87,17 +99,6 @@ void TetrisPuzzle::rotateActivePiece() {
   }
 }
 
-std::uint8_t TetrisPuzzle::stackHeight() const {
-  for (std::uint8_t r = 0; r < kHeight; ++r) {
-    for (std::uint8_t c = 0; c < kWidth; ++c) {
-      if (board_[r][c] != 0) {
-        return static_cast<std::uint8_t>(kHeight - r);
-      }
-    }
-  }
-  return 0;
-}
-
 void TetrisPuzzle::lockPiece(puzzles::PuzzleContext& ctx) {
   for (const Cell& cell : activeCells_) {
     const int wr = pieceRow_ + cell.row;
@@ -107,20 +108,16 @@ void TetrisPuzzle::lockPiece(puzzles::PuzzleContext& ctx) {
     }
   }
 
-  if (stackHeight() >= drainThresholdRow_) {
-    stability_ -= drainRatePerLock_;
-    if (stability_ < 0.0f) stability_ = 0.0f;
-  }
-
   clearCompletedRows(ctx);
 
-  if (level_ >= targetLevel_) {
+  if (linesCleared_ >= targetLines_) {
     solved_ = true;
     ctx.audio.playCue(protocol::AudioCueId::Success);
     return;
   }
 
   spawnPiece(ctx.nowMs);
+  nextDropMs_ = ctx.nowMs + dropIntervalMs_;  // fresh piece gets a full interval before it auto-falls
   if (collides(activeCells_, pieceRow_, pieceCol_)) {
     overload(ctx);
   }
@@ -150,20 +147,17 @@ void TetrisPuzzle::clearCompletedRows(puzzles::PuzzleContext& ctx) {
 
   if (clearedCount > 0) {
     linesCleared_ = static_cast<std::uint8_t>(linesCleared_ + clearedCount);
-    level_ = static_cast<std::uint8_t>(1 + linesCleared_ / 10);
-    stability_ += 0.08f * clearedCount;
-    if (stability_ > 1.0f) stability_ = 1.0f;
     ctx.audio.playTone(660.0f, 180);
   }
 }
 
 void TetrisPuzzle::overload(puzzles::PuzzleContext& ctx) {
   board_ = {};
-  stability_ -= 0.4f;
-  if (stability_ < 0.0f) stability_ = 0.0f;
+  pendingPenaltyMs_ += overloadPenaltyMs_;
   ctx.audio.playCue(protocol::AudioCueId::Error);
   ctx.vibration.pulse(300);
   spawnPiece(ctx.nowMs);
+  nextDropMs_ = ctx.nowMs + dropIntervalMs_;
 }
 
 void TetrisPuzzle::poll(puzzles::PuzzleContext& ctx) {
@@ -228,20 +222,22 @@ void TetrisPuzzle::poll(puzzles::PuzzleContext& ctx) {
     return;
   }
 
-  // Ambient stability tone: pitch rises as stability falls (read pitch
-  // without looking, per docs/puzzles/puzzle_06.md's sound design).
-  ctx.audio.holdTone(120.0f + (1.0f - stability_) * 500.0f);
-
-  // Heartbeat vibration below the tension threshold, quickening as
-  // stability keeps dropping.
-  if (stability_ < 0.4f && !paused_) {
-    if (ctx.nowMs >= nextHeartbeatMs_) {
-      const std::uint32_t period = 150 + static_cast<std::uint32_t>(stability_ * 1875.0f);
-      ctx.vibration.pulse(80);
-      nextHeartbeatMs_ = ctx.nowMs + period;
+  // Auto-fall: the active piece drops on its own once nextDropMs_ passes,
+  // regardless of button presses. A press-driven soft/hard drop above
+  // already re-schedules this (via lockPiece()/spawnPiece()), so this only
+  // fires when the player hasn't already moved the piece down this tick.
+  if (!paused_ && ctx.nowMs >= nextDropMs_) {
+    if (!collides(activeCells_, static_cast<std::int8_t>(pieceRow_ + 1), pieceCol_)) {
+      ++pieceRow_;
+      nextDropMs_ = ctx.nowMs + dropIntervalMs_;
+    } else {
+      lockPiece(ctx);
+    }
+    if (solved_) {
+      return;
     }
   }
 
   const char* phase = paused_ ? "PAUS" : "PLAY";
-  panel.renderTetrisPuzzle(phase, level_, targetLevel_, paused_ ? 0 : 0x3F, !paused_);
+  panel.renderTetrisPuzzle(phase, linesCleared_, targetLines_, paused_ ? 0 : 0x3F, !paused_);
 }

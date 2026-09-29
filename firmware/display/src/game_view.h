@@ -4,7 +4,9 @@
 
 #if defined(ESP32_8048S050C)
 
+#include <ArduinoJson.h>
 #include <Arduino_GFX_Library.h>
+#include <HardwareSerial.h>
 #include <lvgl.h>
 
 #include <array>
@@ -44,9 +46,15 @@ class GameView {
 
  private:
   bool fetchStatus();
+  void applyGameStatus(JsonDocument& doc);
   void render();
   void showScreen(lv_obj_t* screen);
   void handleDisconnected();
+  // Drains whatever bytes are already sitting in the UART's hardware FIFO
+  // (HardwareSerial::available()/read() never block, unlike the WS client
+  // this replaced -- see the comment on mainUart_), accumulates them into
+  // uartLineBuf_, and applies+renders each complete '\n'-terminated line.
+  void pollMainUart();
 
   // --- LVGL glue ---
   static void flushCb(lv_display_t* disp, const lv_area_t* area, std::uint8_t* px_map);
@@ -77,6 +85,7 @@ class GameView {
   void updateHighscoreEntryScreen();
   void updateHighscoreRows(std::array<lv_obj_t*, 5>& rows);
   void updateDebugScreen();
+  void updatePersistentTimer();
 
   void gridCellRect(std::uint8_t cell, int& x, int& y, int& w, int& h) const;
   void postGridTouch(std::uint8_t cell);
@@ -118,9 +127,8 @@ class GameView {
   std::uint8_t gridCursor_ = 0;
   std::uint16_t gridLockedMask_ = 0;
 
-  std::uint8_t tetrisLevel_ = 1;
-  std::uint8_t tetrisTargetLevel_ = 3;
-  float tetrisStability_ = 1.0f;
+  std::uint8_t tetrisLinesCleared_ = 0;
+  std::uint8_t tetrisTargetLines_ = 10;
   bool tetrisPaused_ = false;
   static constexpr std::uint8_t kTetrisWidth = 10;
   static constexpr std::uint8_t kTetrisHeight = 16;
@@ -167,8 +175,7 @@ class GameView {
 
   lv_obj_t* tetrisCanvas_ = nullptr;
   lv_color_t* tetrisCanvasBuf_ = nullptr;
-  lv_obj_t* tetrisStabilityBar_ = nullptr;
-  lv_obj_t* tetrisLevelLabel_ = nullptr;
+  lv_obj_t* tetrisLinesLabel_ = nullptr;
   lv_obj_t* tetrisPausedLabel_ = nullptr;
 
   lv_obj_t* genericTitleLabel_ = nullptr;
@@ -183,10 +190,49 @@ class GameView {
   lv_obj_t* debugTouchRawLabel_ = nullptr;
   lv_obj_t* debugTouchDot_ = nullptr;
 
+  // Persistent room-clock overlay -- lives on lv_layer_top(), not any one
+  // screen, so it stays visible across every puzzle screen.
+  lv_obj_t* persistentTimerPanel_ = nullptr;
+  lv_obj_t* persistentTimerLabel_ = nullptr;
+
   // --- redraw bookkeeping ---
   bool connected_ = false;
   std::uint8_t consecutiveFailures_ = 0;
   std::uint32_t lastPollMs_ = 0;
+  // Highest AppController::statusSeq_ applied so far -- the HTTP poll and
+  // the WS push race independently, so a snapshot built before a
+  // since-applied one can still arrive after it; applyGameStatus() drops
+  // anything with seq <= this instead of stomping newer state with stale
+  // data (see the comment on statusSeq_ in app_controller.h).
+  std::uint32_t lastAppliedStatusSeq_ = 0;
+
+  // Supplementary push channel from AppController::displayUart_ (see its
+  // comment) -- GET /api/game above stays the connectivity-health/fallback
+  // mechanism (drives connected_/consecutiveFailures_ unchanged); a UART
+  // line just applies fresher state and re-renders immediately, without
+  // waiting for the next poll.
+  //
+  // This used to be a WebSocketsClient (WiFi), which did a BLOCKING TCP
+  // connect internally (5s worst case) whenever not currently connected --
+  // called from the main loop, that froze rendering/touch/HTTP-poll for up
+  // to 5s on any hiccup (hardware-confirmed: screen would stick on a stale
+  // value for a few seconds, then jump), needing a dedicated FreeRTOS task
+  // to work around. A direct wired UART has no such failure mode:
+  // HardwareSerial::available()/read() only ever look at an already-filled
+  // hardware FIFO and return immediately, so pollMainUart() can run
+  // straight on the main/LVGL loop with no task/mutex needed. GPIO12
+  // (RX) / GPIO13 (TX) were the display's TF/SD-card SPI MISO/SCLK -- see
+  // display_board_profile.h -- physically broken out but never used by
+  // this firmware, so free to repurpose; the far end is
+  // AppController::displayUart_ on the main controller's GPIO32/33.
+  HardwareSerial mainUart_{1};
+  static constexpr std::uint8_t kMainUartRxPin = 12;
+  static constexpr std::uint8_t kMainUartTxPin = 13;
+  String uartLineBuf_;
+  std::uint32_t uartBytes_ = 0;
+  std::uint32_t uartLinesOk_ = 0;
+  std::uint32_t uartLinesBad_ = 0;
+  std::uint32_t lastUartDiagMs_ = 0;
 };
 
 #endif  // ESP32_8048S050C

@@ -47,10 +47,14 @@ inline constexpr std::uint8_t kI2cScl = 22;
 inline constexpr std::uint8_t kServoSignal = 25;
 
 // Declared but unused: the three rotary encoders moved to the MCP23017.
-// These pins are physically free. Nothing reads these constants.
+// This pin is physically free. Nothing reads this constant.
 inline constexpr std::uint8_t kEncoderSwitch = 27;
-inline constexpr std::uint8_t kEncoderA = 32;
-inline constexpr std::uint8_t kEncoderB = 33;
+
+// Direct wired UART1 to the display board's GameView (see the comment on
+// AppController::displayUart_) -- reuses the other two pins that were freed
+// by the same encoder move to the MCP23017.
+inline constexpr std::uint8_t kDisplayUartRx = 32;  // <- display GPIO13 (TF/SD SPI MISO, unused)
+inline constexpr std::uint8_t kDisplayUartTx = 33;  // -> display GPIO12 (TF/SD SPI SCLK, unused)
 
 }  // namespace pins
 

@@ -160,21 +160,19 @@ you notice which way it's drifting, start moving with it, not just toward it.
 panel.
 
 **How to play:**
-1. Use the panel to move and stack blocks: **button 1** moves left, **button 2** rotates,
-   **button 3** moves right, **button 4** drops one row at a time, **button 5** drops the
-   piece all the way down instantly, **button 6** pauses/resumes.
-2. Blocks don't fall on their own — they only move when you tell them to, so there's no rush
-   on any single piece.
-3. Clear full rows to score points and climb levels. Reach the target level to solve it.
-4. Keep an eye (and ear) on the stability meter next to the board: if your stack gets too
-   tall, the box starts an anxious rising tone and a quickening heartbeat vibration. Clearing
-   rows calms it back down. Let it get bad enough and the reactor "overloads" — the board
-   clears itself and you get a fresh start, at a cost.
+1. Blocks fall on their own, one row at a time, on a steady clock. Use the panel to move and
+   stack them before they land: **button 1** moves left, **button 2** rotates, **button 3**
+   moves right, **button 4** drops the current piece one row early, **button 5** drops it all
+   the way down instantly, **button 6** pauses/resumes (also stops the fall clock).
+2. Clear full rows to make progress. Clear the target number of rows to solve it.
+3. Don't let the stack reach the top. If a new piece has nowhere to spawn, the reactor
+   "overloads" — the board clears itself, you get a fresh start, and it costs you time
+   straight off the run clock, the same as a mistake in any other puzzle.
 
 **Controls:** TM1638 buttons 1–6. Screen for the board.
 
-**Tip:** There's no penalty for taking your time positioning a piece — the pressure comes
-entirely from the stack getting tall, not from a falling-block clock.
+**Tip:** Button 4 and button 5 exist for when you already know where a piece is going —
+you don't have to wait for the fall clock if you're ready sooner.
 
 ---
 

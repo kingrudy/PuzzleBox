@@ -46,12 +46,14 @@ class AppController {
   void updateOutputsForState();
   void syncDiagnostics();
   void handleGameStatus(AsyncWebServerRequest *request);
-  void handleTouchPost(AsyncWebServerRequest *request);
+  void handleTouchJson(AsyncWebServerRequest *request, JsonVariant &json);
   void handleLogsGet(AsyncWebServerRequest *request);
   void handleDebugPageGet(AsyncWebServerRequest *request);
   void handleDebugStatusGet(AsyncWebServerRequest *request);
   void handleDebugTestJson(AsyncWebServerRequest *request, JsonVariant &json);
   void applyPendingDebugTest();
+  void buildGameStatusJson(String& out);
+  void pushGameStatusOverUart();
 
   void tickSetup();
   void tickPuzzleSelection();
@@ -109,6 +111,19 @@ class AppController {
   std::array<std::uint8_t, FinalePuzzle::kDigitCount> collectedDigits_{};
   puzzles::Difficulty difficulty_ = puzzles::Difficulty::kMedium;
 
+  // Every discrete-stepping encoder consumer below (Setup, puzzle selection,
+  // highscore letters) reads InputPanelService::EncoderState::value, which
+  // is a raw quadrature edge counter (see kQuadratureDelta in
+  // input_panel_service.cpp) -- a mechanical detent on these encoders fires
+  // 4 edges, not 1. Applying a full step per raw edge made one physical
+  // click apply up to 4x its intended step in rapid, separate tick()
+  // iterations (hardware-confirmed: felt jumpy/imprecise on the Setup
+  // screen even once network latency was no longer a factor). Divide by
+  // this before applying a step, and only advance the baseline by the
+  // consumed multiple of it -- not a full reset to the current raw value --
+  // so a partial (sub-detent) turn isn't lost, just carried over.
+  static constexpr std::int32_t kEncoderCountsPerDetent = 4;
+
   // --- Setup: time-limit selection ---
   std::uint32_t selectedLimitSeconds_ = 900;  // default 15:00
   static constexpr std::uint32_t kMinLimitSeconds = 300;   // 5:00
@@ -159,4 +174,33 @@ class AppController {
   bool debugMainDisplayTestActive_ = false;  // relayed to s3_display via /api/game
 
   AsyncWebServer webServer_{80};
+
+  // Direct wired push channel to the display, supplementing (not replacing)
+  // its ~750ms GET /api/game poll -- that interval is deliberately
+  // conservative for WiFi link stability (see spec/Specifications.md),
+  // which made on-screen feedback for e.g. turning the Setup time-limit
+  // encoder feel laggy compared to the TM1638's instant local update. A WS
+  // push over WiFi got most of the way there but still carried a WiFi
+  // round-trip; this is a genuinely wired point-to-point link (main
+  // controller GPIO33 TX -> display GPIO12 RX, GPIO32 RX <- display GPIO13
+  // TX, common GND -- see the comment on kTfMosi/kTfSclk/kTfMiso in
+  // display_board_profile.h for why those specific display-side pins were
+  // free to repurpose), so there's no connect/reconnect/backoff state to
+  // track: just write a line, unconditionally, every kUartPushIntervalMs.
+  // Same JSON payload as /api/game, newline-framed so a corrupted line is
+  // self-recovering (deserializeJson fails closed, next line resyncs).
+  HardwareSerial displayUart_{1};
+  static constexpr std::uint32_t kUartPushIntervalMs = 10;
+  std::uint32_t lastUartPushMs_ = 0;
+
+  // Monotonic counter stamped into every buildGameStatusJson() snapshot as
+  // "seq". The HTTP poll and the UART push race independently (different
+  // transports, different latencies), so a GET /api/game response built
+  // *before* a since-sent UART line can arrive at the display *after*
+  // it -- without a way to tell old from new, applying it stomps the newer
+  // value straight back to stale, which is what caused the display to
+  // flicker between two values on a fast encoder turn (back when this was
+  // the WS push). The display keeps the highest seq it's applied and drops
+  // anything older.
+  std::uint32_t statusSeq_ = 0;
 };

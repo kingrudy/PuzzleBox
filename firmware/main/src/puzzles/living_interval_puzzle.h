@@ -20,7 +20,9 @@ class LivingIntervalPuzzle : public puzzles::Puzzle {
   protocol::PuzzleId id() const override { return protocol::PuzzleId::LivingInterval; }
   std::uint8_t rewardDigit() const override { return rewardDigit_; }
 
-  // For the display status endpoint: 0..1 hold progress per encoder.
+  // For the display status endpoint: 0..1 hold progress per encoder. Once an
+  // encoder has been confirmed (see confirmed_ below), this stays 1.0 even
+  // if the live position has since drifted out of tolerance.
   float holdProgress(std::uint8_t index) const;
   bool holding(std::uint8_t index) const { return holdTimerMs_[index] > 0; }
 
@@ -35,9 +37,18 @@ class LivingIntervalPuzzle : public puzzles::Puzzle {
   std::array<float, kCount> phaseRad_{};
   std::array<std::uint32_t, kCount> holdTimerMs_{};
   std::array<bool, kCount> lastButtonPressed_{};
+  // Sticky per-encoder completion: once an encoder finishes its hold, it
+  // stays confirmed even after drifting back out of tolerance, so the
+  // three encoders can be solved one at a time instead of needing all
+  // three simultaneously in-tolerance (was found to be near-impossible
+  // solo at Medium tolerance/hold settings -- see spec/Specifications.md).
+  std::array<bool, kCount> confirmed_{};
 
-  std::int32_t tolerance_ = 2;
-  std::uint32_t holdDurationMs_ = 1500;
+  // Per-encoder, not per-run: encoder 1 is the easiest, encoder 3 the
+  // hardest (see kEncoderToleranceFactor etc. in the .cpp), so difficulty
+  // ramps up across the three instead of all three being identical.
+  std::array<std::int32_t, kCount> tolerance_{};
+  std::array<std::uint32_t, kCount> holdDurationMs_{};
   std::uint32_t lastPollMs_ = 0;
   bool solved_ = false;
   std::uint8_t rewardDigit_ = 0;

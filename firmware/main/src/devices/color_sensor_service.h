@@ -40,8 +40,13 @@ class ColorSensorService {
   // 250ms -- a large, avoidable chunk of the main loop for absent hardware.
   // After a few consecutive NoSignal reads, back off to a much slower
   // recheck; any real reading resets the streak and restores full speed.
+  // Hardware-confirmed: even backed off, this ~96-102ms stall was still
+  // frequent enough (every 3s) to be the dominant remaining source of
+  // Setup-screen encoder lag once the display's WS push latency was fixed
+  // -- 15s keeps hot-plug detection working but nearly eliminates the
+  // chance of a stall landing during a few-seconds interaction.
   static constexpr std::uint8_t kNoSignalStreakForBackoff = 4;
-  static constexpr std::uint32_t kBackoffIntervalMs = 3000;
+  static constexpr std::uint32_t kBackoffIntervalMs = 15000;
 
   std::uint32_t measureFrequency(bool s2High, bool s3High);
   Color classify(std::uint32_t r, std::uint32_t g, std::uint32_t b) const;
