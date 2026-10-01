@@ -36,9 +36,10 @@ enum class PuzzleId : std::uint8_t {
   LivingInterval,    // Levend Interval — 3 encoders, drifting target
   Tetris,            // Reactoroverbelasting — TM1638 + display
   Finale,            // Eindsequentie — recap + celebration, no physical lock
+  TiltMaze,          // Zwaartekrachtlabyrint — GY-91 tilt + display (added after Finale to keep earlier values stable)
 };
 
-inline constexpr std::uint8_t kPuzzleCount = 7;
+inline constexpr std::uint8_t kPuzzleCount = 8;
 
 inline const char* puzzleName(PuzzleId id) {
   switch (id) {
@@ -49,6 +50,7 @@ inline const char* puzzleName(PuzzleId id) {
     case PuzzleId::LivingInterval: return "LivingInterval";
     case PuzzleId::Tetris: return "Tetris";
     case PuzzleId::Finale: return "Finale";
+    case PuzzleId::TiltMaze: return "TiltMaze";
   }
   return "Unknown";
 }

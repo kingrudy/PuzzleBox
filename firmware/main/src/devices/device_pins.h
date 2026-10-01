@@ -46,9 +46,9 @@ inline constexpr std::uint8_t kI2cScl = 22;
 // Servo lock, LEDC PWM 50 Hz.
 inline constexpr std::uint8_t kServoSignal = 25;
 
-// Declared but unused: the three rotary encoders moved to the MCP23017.
-// This pin is physically free. Nothing reads this constant.
-inline constexpr std::uint8_t kEncoderSwitch = 27;
+// One-way UART RX from the Trinket M0 IMU node (its pin 4 TX) -- see
+// ImuService. Freed when the encoders moved to the MCP23017.
+inline constexpr std::uint8_t kImuUartRx = 27;
 
 // Direct wired UART1 to the display board's GameView (see the comment on
 // AppController::displayUart_) -- reuses the other two pins that were freed

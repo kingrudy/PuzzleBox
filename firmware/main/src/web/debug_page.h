@@ -164,6 +164,20 @@ async function refresh() {
     <div class="note">Houd een object voor de sensor.</div>
   `);
 
+  const imu = d.imu;
+  html += card('imu', 'GY-91 IMU (via Trinket M0)', imu.online ? 'connected' : 'not_connected', `
+    <div class="row"><span>Verbinding</span><span class="val ${imu.online ? 'on' : 'off'}">${imu.online ? 'ontvangt' : 'geen data'}</span></div>
+    ${imu.error ? `<div class="row"><span>Sensorfout</span><span class="val" style="color:#e08080">${imu.error}</span></div>` : ''}
+    <div class="row"><span>Kanteling roll / pitch</span><span class="val">${imu.roll.toFixed(1)}&deg; / ${imu.pitch.toFixed(1)}&deg;</span></div>
+    <div class="row"><span>Versnelling (g)</span><span class="val">${(imu.ax/1000).toFixed(2)} / ${(imu.ay/1000).toFixed(2)} / ${(imu.az/1000).toFixed(2)}</span></div>
+    <div class="row"><span>Gyro (&deg;/s)</span><span class="val">${(imu.gx/10).toFixed(1)} / ${(imu.gy/10).toFixed(1)} / ${(imu.gz/10).toFixed(1)}</span></div>
+    <div class="row"><span>Kompas (&micro;T)</span><span class="val">${(imu.mx/10).toFixed(1)} / ${(imu.my/10).toFixed(1)} / ${(imu.mz/10).toFixed(1)}</span></div>
+    <div class="row"><span>Luchtdruk</span><span class="val">${(imu.pressurePa/100).toFixed(2)} hPa</span></div>
+    <div class="row"><span>Temperatuur</span><span class="val">${(imu.tempCenti/100).toFixed(2)} &deg;C</span></div>
+    <div class="row"><span>Regels ok / fout / gemist</span><span class="val">${imu.linesOk} / ${imu.linesBad} / ${imu.dropped}</span></div>
+    <div class="note">Trinket pin 4 (TX) &rarr; GPIO27, plus gedeelde GND. Versnelling nog niet gekalibreerd (in rust ~1,7 g i.p.v. 1 g).</div>
+  `);
+
   html += card('hidden', 'Verborgen sensoren', (d.hidden.sensor1 || d.hidden.sensor2) ? 'connected' : 'not_connected', `
     <div class="row"><span>Sensor 1 (GPIO35)</span><span class="val ${d.hidden.sensor1 ? 'on' : 'off'}">${d.hidden.sensor1 ? 'actief' : 'rust'}</span></div>
     <div class="row"><span>Sensor 2 (GPIO14)</span><span class="val ${d.hidden.sensor2 ? 'on' : 'off'}">${d.hidden.sensor2 ? 'actief' : 'rust'}</span></div>

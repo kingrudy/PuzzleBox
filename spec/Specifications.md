@@ -217,12 +217,51 @@ on `\n`; a torn line fails `deserializeJson` and the next line resyncs. HTTP `GE
 [firmware/display/src/game_view.cpp](../firmware/display/src/game_view.cpp)
 (`GameView::pollMainUart`).
 
+**Follow-ups (all hardware-confirmed):**
+- Sending identical snapshots 100x/s made the display re-render constantly (puzzles froze).
+  The main controller now only sends when anything besides `seq` changed, plus a 250ms
+  heartbeat.
+- The display's remaining HTTP poll blocked its loop 160-250ms per request (measured with
+  `worstPollUs` in the `[uart]` line), freezing screen and sound in Living Interval. The
+  display now has **no WiFi at all**: status in and touches out (`{"touch":N}` lines,
+  `AppController::pollDisplayUart`) both go over the wire, and "no connection" means no
+  UART line for 1s. Display flash use dropped from 1.31MB to 0.71MB.
+- `round_display_2424` already failed to build before this (WiFi101/WiFiEspAT library
+  conflict) — pre-existing, not caused by the UART work.
+
 ### Status snapshots carry a `seq`; the display drops stale ones
 
 Two transports (UART/WS push and HTTP poll) racing means an older snapshot can arrive after
 a newer one and stomp it back (seen as the Setup time flickering 15 <-> 30 on a fast
 encoder turn). `buildGameStatusJson()` stamps a monotonic `seq`;
 `GameView::applyGameStatus()` ignores anything below the highest `seq` already applied.
+
+### GY-91 IMU via a Trinket M0 sensor node
+
+The GY-91 stays on a Trinket M0 with short I2C wires instead of moving onto the main
+controller's bus: a long I2C run there would share the bus with the MCP23017/PCA9685 the
+encoders depend on. The Trinket streams JSON lines at 50 Hz, 115200 baud, Trinket pin 4 (TX)
+→ main GPIO27 (`ImuService`, UART2, RX only), plus common GND. Live readout on `/debug`.
+
+- **Chips (probed by ID register):** genuine MPU-9250 (`WHO_AM_I` 0x71) at 0x68, AK8963
+  magnetometer (WIA 0x48) at 0x0C via bypass, BMP280 (id 0x58) at 0x76. Not a MPU-6500 fake.
+- **Accelerometer reads ~1.7 g at rest** with the range correctly set to ±4 g (register
+  readback confirmed) — an offset/sensitivity error in this chip, not firmware. Not yet
+  calibrated; the tilt maze sidesteps it by measuring tilt relative to a baseline captured at
+  puzzle start (re-captured on any encoder button press).
+- 50 Hz is plenty for tilt/orientation/shake/compass/pressure games, but too slow to catch
+  knocks (few-ms spikes). A knock game should detect on the Trinket at high rate and send an
+  event.
+- Trinket USB ID `239A:801E` = Arduino sketch (CircuitPython would be `801F` with a
+  `CIRCUITPY` drive). Flash with `pio run -e trinket_imu -t upload --upload-port COMx`.
+
+### Tilt maze axis mapping
+
+`TiltMazePuzzle` maps accel X (sign −1) to screen right and accel Y (sign **+1**) to screen
+down — Y was inverted on the first try and flipped after hardware testing. If the GY-91 is
+remounted, re-tune `kScreenXAxis/Sign` and `kScreenYAxis/Sign` in
+[tilt_maze_puzzle.cpp](../firmware/main/src/puzzles/tilt_maze_puzzle.cpp). Gain
+(14 cells/s² per g) was confirmed to feel right.
 
 ### `Serial` on the display is native USB-CDC, not the CH340
 

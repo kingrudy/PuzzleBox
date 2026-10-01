@@ -46,6 +46,8 @@ void AppController::begin() {
   inputPanelService_.begin();
   eventLog_.logf("input_panel", "MCP23017 ready, 3 encoders configured");
 
+  imuService_.begin();
+
   displayUart_.begin(921600, SERIAL_8N1, pins::kDisplayUartRx, pins::kDisplayUartTx);
   eventLog_.logf("uart", "display link ready on GPIO%u/%u @ 921600", pins::kDisplayUartRx,
                  pins::kDisplayUartTx);
@@ -93,6 +95,7 @@ void AppController::tick() {
   hiddenTriggerService_.poll();
   vibrationService_.tick();
   inputPanelService_.poll();
+  imuService_.poll();
   // AsyncWebServer handles requests asynchronously, no handleClient() call needed
 
   syncDiagnostics();
@@ -102,6 +105,7 @@ void AppController::tick() {
     pendingDebugTest_.pending = false;
   }
 
+  pollDisplayUart();
   const std::uint32_t nowMs = millis();
   if (nowMs - lastUartPushMs_ >= kUartPushIntervalMs) {
     lastUartPushMs_ = nowMs;
@@ -215,6 +219,7 @@ void AppController::tickPuzzleSelection() {
         protocol::PuzzleId::SpectralTuner,
         protocol::PuzzleId::LivingInterval,
         protocol::PuzzleId::Tetris,
+        protocol::PuzzleId::TiltMaze,
         protocol::PuzzleId::Finale,
     };
     const protocol::PuzzleId selectedId = puzzleIds[selectedPuzzleIndex_];
@@ -265,12 +270,16 @@ void AppController::tickCountdown() {
 // ---------------------------------------------------------------------------
 
 void AppController::shufflePuzzleOrder() {
-  shuffledPuzzles_ = {&patternPuzzle_,       &resonantGridPuzzle_, &vibrationalCipherPuzzle_,
-                      &spectralTunerPuzzle_, &livingIntervalPuzzle_, &tetrisPuzzle_};
-  for (std::uint8_t i = kShuffledCount; i > 1; --i) {
+  std::array<puzzles::Puzzle*, kShuffledCount + 1> pool = {
+      &patternPuzzle_,        &resonantGridPuzzle_, &vibrationalCipherPuzzle_, &spectralTunerPuzzle_,
+      &livingIntervalPuzzle_, &tetrisPuzzle_,       &tiltMazePuzzle_};
+  // Without the IMU the tilt maze can't be solved -- leave it out of the draw.
+  const std::uint8_t poolSize = imuService_.online() ? pool.size() : pool.size() - 1;
+  for (std::uint8_t i = poolSize; i > 1; --i) {
     const std::uint8_t j = static_cast<std::uint8_t>(random(i));
-    std::swap(shuffledPuzzles_[i - 1], shuffledPuzzles_[j]);
+    std::swap(pool[i - 1], pool[j]);
   }
+  std::copy(pool.begin(), pool.begin() + kShuffledCount, shuffledPuzzles_.begin());
   Serial.print("[game] puzzle order:");
   for (auto* p : shuffledPuzzles_) {
     Serial.printf(" %s", protocol::puzzleName(p->id()));
@@ -313,6 +322,9 @@ void AppController::beginSinglePuzzle(protocol::PuzzleId puzzleId) {
       break;
     case protocol::PuzzleId::Tetris:
       puzzle = &tetrisPuzzle_;
+      break;
+    case protocol::PuzzleId::TiltMaze:
+      puzzle = &tiltMazePuzzle_;
       break;
     case protocol::PuzzleId::Finale:
       // For Finale test, populate with dummy digits
@@ -608,6 +620,29 @@ void AppController::buildGameStatusJson(String& out) {
     grid["totalCells"] = resonantGridPuzzle_.totalCells();
     grid["cursor"] = resonantGridPuzzle_.cursor();
     grid["lockedMask"] = resonantGridPuzzle_.lockedMask();
+  } else if (active == &tiltMazePuzzle_) {
+    JsonObject maze = doc["maze"].to<JsonObject>();
+    maze["id"] = tiltMazePuzzle_.layoutId();
+    maze["cols"] = tiltMazePuzzle_.cols();
+    maze["rows"] = tiltMazePuzzle_.rows();
+    // One digit per cell (bit0 = east wall, bit1 = south wall): ~60 bytes for
+    // the largest maze, cheap enough to send in every snapshot.
+    char walls[TiltMazePuzzle::kMaxCells + 1];
+    const std::uint8_t cellCount = tiltMazePuzzle_.cols() * tiltMazePuzzle_.rows();
+    for (std::uint8_t i = 0; i < cellCount; ++i) {
+      walls[i] = static_cast<char>('0' + tiltMazePuzzle_.walls(i));
+    }
+    walls[cellCount] = '\0';
+    maze["walls"] = walls;
+    JsonArray holes = maze["holes"].to<JsonArray>();
+    for (std::uint8_t i = 0; i < tiltMazePuzzle_.holeCount(); ++i) {
+      holes.add(tiltMazePuzzle_.hole(i));
+    }
+    maze["exit"] = tiltMazePuzzle_.exitCell();
+    maze["bx"] = static_cast<int>(tiltMazePuzzle_.ballX() * 100.0f);
+    maze["by"] = static_cast<int>(tiltMazePuzzle_.ballY() * 100.0f);
+    maze["falls"] = tiltMazePuzzle_.falls();
+    maze["sensor"] = tiltMazePuzzle_.sensorOnline();
   } else if (active == &tetrisPuzzle_) {
     JsonObject tetris = doc["tetris"].to<JsonObject>();
     tetris["linesCleared"] = tetrisPuzzle_.linesCleared();
@@ -648,9 +683,48 @@ void AppController::buildGameStatusJson(String& out) {
   serializeJson(doc, out);
 }
 
+void AppController::pollDisplayUart() {
+  while (displayUart_.available() > 0) {
+    const char c = static_cast<char>(displayUart_.read());
+    if (c == '\r') {
+      continue;
+    }
+    if (c != '\n') {
+      displayRxLine_ += c;
+      if (displayRxLine_.length() > 128) {
+        displayRxLine_ = "";  // garbage -- resync on the next '\n'
+      }
+      continue;
+    }
+
+    JsonDocument doc;
+    if (displayRxLine_.length() > 0 && deserializeJson(doc, displayRxLine_) == DeserializationError::Ok) {
+      const int cell = doc["touch"] | -1;
+      if (cell >= 0 && cell <= 255) {
+        touchCellIndex_ = static_cast<std::uint8_t>(cell);
+        touchPending_ = true;
+        eventLog_.logf("touch", "cell=%u (uart)", touchCellIndex_);
+      }
+    }
+    displayRxLine_ = "";
+  }
+}
+
 void AppController::pushGameStatusOverUart() {
   String body;
   buildGameStatusJson(body);
+  // Only send when something other than "seq" changed (or as a heartbeat):
+  // sending an identical snapshot 100x/s made the display parse and re-render
+  // constantly (hardware-confirmed: puzzles froze, worst on Tetris), and the
+  // ~500-byte line blocks this loop ~5ms per write at 921600 baud.
+  const int contentStart = body.indexOf(",\"state\"");
+  String content = contentStart >= 0 ? body.substring(contentStart) : body;
+  const std::uint32_t nowMs = millis();
+  if (content == lastUartContent_ && nowMs - lastUartSendMs_ < kUartHeartbeatMs) {
+    return;
+  }
+  lastUartContent_ = content;
+  lastUartSendMs_ = nowMs;
   // println(), not print(): the display frames lines on '\n' (see
   // GameView's UART receive loop) -- a self-synchronizing framing where a
   // torn/corrupted line just fails deserializeJson() and the next line
@@ -689,6 +763,27 @@ void AppController::handleDebugStatusGet(AsyncWebServerRequest *request) {
   JsonObject hidden = doc["hidden"].to<JsonObject>();
   hidden["sensor1"] = hiddenTriggerService_.sensor1Active();
   hidden["sensor2"] = hiddenTriggerService_.sensor2Active();
+
+  JsonObject imu = doc["imu"].to<JsonObject>();
+  const ImuService::Sample& s = imuService_.sample();
+  imu["online"] = imuService_.online();
+  imu["error"] = imuService_.sensorError();
+  imu["ax"] = s.ax;
+  imu["ay"] = s.ay;
+  imu["az"] = s.az;
+  imu["gx"] = s.gx;
+  imu["gy"] = s.gy;
+  imu["gz"] = s.gz;
+  imu["mx"] = s.mx;
+  imu["my"] = s.my;
+  imu["mz"] = s.mz;
+  imu["pressurePa"] = s.pressurePa;
+  imu["tempCenti"] = s.tempCenti;
+  imu["roll"] = imuService_.rollDeg();
+  imu["pitch"] = imuService_.pitchDeg();
+  imu["linesOk"] = imuService_.linesOk();
+  imu["linesBad"] = imuService_.linesBad();
+  imu["dropped"] = imuService_.samplesDropped();
 
   JsonObject servo = doc["servo"].to<JsonObject>();
   servo["isOpen"] = servoService_.isOpen();

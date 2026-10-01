@@ -59,6 +59,8 @@ device). That pattern should extend to every row below marked `Not connected` or
 | TCS3200/TCS230 colour sensor | `ColorSensorService` | GPIO34/0/2, hard-strapped | Not connected | Live in diagnostics, not yet bound to a puzzle |
 | Servo lock | `ServoService` | GPIO25 | Not connected | |
 | Vibration motor (driver board) | `VibrationService` | GPIO15 | Connected | |
+| GY-91 IMU (MPU-9250 + AK8963 + BMP280) via Trinket M0 | `ImuService` | UART RX GPIO27 (Trinket pin 4 TX) + GND | Connected | Sensor on the Trinket's own short I2C bus; firmware in `firmware/trinket/src` (env `trinket_imu`). Used by the tilt maze. |
+| Display link (UART) | `AppController::displayUart_` | GPIO33 TX / GPIO32 RX | Connected | To display GPIO12/13; see Specifications.md |
 
 ## C3 Sidecar Node
 
@@ -72,10 +74,10 @@ device). That pattern should extend to every row below marked `Not connected` or
 
 | Component | Notes | Status |
 |---|---|---|
-| Board itself (800×480 IPS RGB panel) | Wi-Fi STA → HTTP/JSON | Connected |
+| Board itself (800×480 IPS RGB panel) | Wired UART to main (GPIO12 RX / 13 TX); no Wi-Fi | Connected |
 | Capacitive touch (GT911) | I2C, addr `0x5D` | Connected |
 | I2S audio out | `DisplaySpeakerService`, 16kHz | Connected |
-| TF/microSD slot | SPI 10/11/12/13 — wired but no firmware use found | Not connected |
+| TF/microSD slot | SPI 10/11/12/13 — pins 12/13 now repurposed as the UART link; do not insert a card | Removed |
 
 ## Round Display Node — ESP32-2424S012N
 

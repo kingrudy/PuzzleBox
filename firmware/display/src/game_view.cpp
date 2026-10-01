@@ -3,11 +3,7 @@
 #if defined(ESP32_8048S050C)
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
-#include <WiFi.h>
 #include <esp_heap_caps.h>
-
-#include "config/network_config.h"
 
 namespace {
 
@@ -27,14 +23,6 @@ constexpr std::uint16_t kVsyncBackPorch = 8;
 constexpr std::uint16_t kPclkActiveNeg = 0;
 
 constexpr std::size_t kBounceBufferSizePx = display_board::kWidth * 10;
-// Validated in spec/puzzlebox_hw.md section 7.3 -- do not tighten without
-// testing. A flat, faster poll here previously made the display flap
-// between online and offline.
-constexpr std::uint32_t kOnlinePollIntervalMs = 750;
-constexpr std::uint32_t kOfflineRetryIntervalMs = 1500;
-// A single dropped/slow poll shouldn't flash the "no connection" screen --
-// only show it once this many consecutive polls have failed.
-constexpr std::uint8_t kDisconnectAfterFailures = 2;
 
 // LVGL partial-render draw buffer, sized the same way as the GFX-library's
 // own bundled LVGL example for this display class (examples/LVGL/
@@ -187,34 +175,8 @@ void GameView::gridCellClickedCb(lv_event_t* e) {
 }
 
 // ---------------------------------------------------------------------------
-// Status polling
+// Status intake (UART only -- see pollMainUart)
 // ---------------------------------------------------------------------------
-
-bool GameView::fetchStatus() {
-  if (WiFi.status() != WL_CONNECTED) {
-    return false;
-  }
-
-  HTTPClient http;
-  http.setConnectTimeout(300);
-  http.setTimeout(800);
-  http.begin(String("http://") + config::kMainControllerIp + "/api/game");
-  const int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-  const String body = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  if (deserializeJson(doc, body) != DeserializationError::Ok) {
-    return false;
-  }
-
-  applyGameStatus(doc);
-  return true;
-}
 
 void GameView::applyGameStatus(JsonDocument& doc) {
   const std::uint32_t seq = doc["seq"] | 0;
@@ -272,6 +234,25 @@ void GameView::applyGameStatus(JsonDocument& doc) {
     ++r;
   }
 
+  JsonObject maze = doc["maze"];
+  if (!maze.isNull()) {
+    mazeId_ = maze["id"] | 0;
+    mazeCols_ = std::min<std::uint8_t>(maze["cols"] | 0, 10);
+    mazeRows_ = std::min<std::uint8_t>(maze["rows"] | 0, 6);
+    strncpy(mazeWalls_, maze["walls"] | "", kMazeMaxCells);
+    mazeWalls_[kMazeMaxCells] = '\0';
+    mazeHoleCount_ = 0;
+    for (JsonVariant h : maze["holes"].as<JsonArray>()) {
+      if (mazeHoleCount_ >= kMazeMaxHoles) break;
+      mazeHoles_[mazeHoleCount_++] = h.as<std::uint8_t>();
+    }
+    mazeExit_ = maze["exit"] | 0;
+    mazeBallX_ = maze["bx"] | 0;
+    mazeBallY_ = maze["by"] | 0;
+    mazeFalls_ = maze["falls"] | 0;
+    mazeSensorOnline_ = maze["sensor"] | true;
+  }
+
   JsonArray hs = doc["highscores"];
   highscoreCount_ = 0;
   for (JsonObject e : hs) {
@@ -306,36 +287,31 @@ void GameView::applyGameStatus(JsonDocument& doc) {
 }
 
 void GameView::poll() {
-  lv_timer_handler();  // LVGL needs frequent ticks for input/animation, independent of the network poll below
+  struct PollTimer {
+    std::uint32_t& worst;
+    std::uint32_t startUs = micros();
+    ~PollTimer() {
+      const std::uint32_t d = micros() - startUs;
+      if (d > worst) worst = d;
+    }
+  } pollTimer{worstPollUs_};
+  lv_timer_handler();  // LVGL needs frequent ticks for input/animation
   pollMainUart();       // never blocks -- just drains whatever's already in the UART FIFO, if anything
 
   // The touch-dot readout needs to track a fast, brief tap -- refresh it
-  // every call (i.e. every loop() iteration), not just once per (now much
-  // slower, 750ms) network poll below, or a quick tap can start and end
-  // between two updates and never show.
+  // every call (i.e. every loop() iteration), or a quick tap can start and
+  // end between two updates and never show.
   if (debugTestPatternActive_ && currentScreen_ == debugScreen_) {
     updateDebugScreen();
   }
 
-  const std::uint32_t now = millis();
-  const std::uint32_t interval = connected_ ? kOnlinePollIntervalMs : kOfflineRetryIntervalMs;
-  if (now - lastPollMs_ < interval) {
-    return;
-  }
-  lastPollMs_ = now;
-
-  if (fetchStatus()) {
-    consecutiveFailures_ = 0;
-    connected_ = true;
-    render();
-  } else {
-    if (consecutiveFailures_ < 0xFF) {
-      ++consecutiveFailures_;
-    }
-    if (connected_ && consecutiveFailures_ >= kDisconnectAfterFailures) {
-      connected_ = false;
-      handleDisconnected();
-    }
+  // The main controller sends at least a heartbeat every 250ms, so a quiet
+  // wire for kUartFreshMs means the link is down. The display has no WiFi at
+  // all any more (the blocking HTTP poll it replaced stalled LVGL, touch and
+  // audio for 160-250ms per request).
+  if (connected_ && millis() - lastUartOkMs_ >= kUartFreshMs) {
+    connected_ = false;
+    handleDisconnected();
   }
 }
 
@@ -363,7 +339,9 @@ void GameView::pollMainUart() {
   const std::uint32_t nowMs = millis();
   if (nowMs - lastUartDiagMs_ >= 5000) {
     lastUartDiagMs_ = nowMs;
-    Serial0.printf("[uart] bytes=%u linesOk=%u linesBad=%u\n", uartBytes_, uartLinesOk_, uartLinesBad_);
+    Serial0.printf("[uart] bytes=%u linesOk=%u linesBad=%u worstPollUs=%u\n", uartBytes_, uartLinesOk_,
+                   uartLinesBad_, worstPollUs_);
+    worstPollUs_ = 0;
   }
 
   bool appliedAny = false;
@@ -386,9 +364,9 @@ void GameView::pollMainUart() {
       if (deserializeJson(doc, uartLineBuf_) == DeserializationError::Ok) {
         ++uartLinesOk_;
         applyGameStatus(doc);
-        consecutiveFailures_ = 0;
         connected_ = true;
         appliedAny = true;
+        lastUartOkMs_ = millis();
       } else {
         ++uartLinesBad_;
       }
@@ -433,6 +411,9 @@ void GameView::render() {
       } else if (puzzleId_ == "Tetris") {
         showScreen(tetrisScreen_);
         updateTetrisScreen();
+      } else if (puzzleId_ == "TiltMaze") {
+        showScreen(tiltMazeScreen_);
+        updateTiltMazeScreen();
       } else {
         showScreen(genericPuzzleScreen_);
         updateGenericPuzzleScreen();
@@ -593,6 +574,121 @@ void GameView::buildTetrisScreen() {
   lv_obj_add_flag(tetrisPausedLabel_, LV_OBJ_FLAG_HIDDEN);
 }
 
+void GameView::buildTiltMazeScreen() {
+  tiltMazeScreen_ = createScreen("ZWAARTEKRACHTLABYRINT");
+
+  mazeStatusLabel_ = lv_label_create(tiltMazeScreen_);
+  lv_obj_set_style_text_font(mazeStatusLabel_, &lv_font_montserrat_20, 0);
+  lv_obj_align(mazeStatusLabel_, LV_ALIGN_TOP_MID, 0, 50);
+
+  mazeArea_ = lv_obj_create(tiltMazeScreen_);
+  lv_obj_remove_style_all(mazeArea_);
+  lv_obj_clear_flag(mazeArea_, LV_OBJ_FLAG_SCROLLABLE);
+
+  // The ball lives on the screen (not mazeArea_) so lv_obj_clean() on a
+  // rebuild doesn't delete it.
+  mazeBall_ = lv_obj_create(tiltMazeScreen_);
+  lv_obj_remove_style_all(mazeBall_);
+  lv_obj_set_style_radius(mazeBall_, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(mazeBall_, lv_color_make(255, 210, 60), 0);
+  lv_obj_set_style_bg_opa(mazeBall_, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(mazeBall_, 2, 0);
+  lv_obj_set_style_border_color(mazeBall_, lv_color_make(255, 255, 220), 0);
+  lv_obj_clear_flag(mazeBall_, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+void GameView::rebuildMaze() {
+  mazeBuiltId_ = mazeId_;
+  lv_obj_clean(mazeArea_);
+  if (mazeCols_ == 0 || mazeRows_ == 0) {
+    return;
+  }
+
+  // Fit the maze into the area below the title/status line.
+  constexpr int kAreaX = 40, kAreaY = 85, kAreaW = 720, kAreaH = 380;
+  mazeCellPx_ = std::min(kAreaW / mazeCols_, kAreaH / mazeRows_);
+  const int w = mazeCellPx_ * mazeCols_;
+  const int h = mazeCellPx_ * mazeRows_;
+  lv_obj_set_pos(mazeArea_, kAreaX + (kAreaW - w) / 2, kAreaY + (kAreaH - h) / 2);
+  lv_obj_set_size(mazeArea_, w + 1, h + 1);
+  lv_obj_set_style_bg_color(mazeArea_, lv_color_make(18, 18, 34), 0);
+  lv_obj_set_style_bg_opa(mazeArea_, LV_OPA_COVER, 0);
+
+  auto addCircle = [&](std::uint8_t cell, int diameter, lv_color_t color) {
+    lv_obj_t* o = lv_obj_create(mazeArea_);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, diameter, diameter);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(o, color, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    const int cx = (cell % mazeCols_) * mazeCellPx_ + mazeCellPx_ / 2;
+    const int cy = (cell / mazeCols_) * mazeCellPx_ + mazeCellPx_ / 2;
+    lv_obj_set_pos(o, cx - diameter / 2, cy - diameter / 2);
+    return o;
+  };
+  // Sizes mirror TiltMazePuzzle's kHoleRadius/kExitRadius (0.30 cells).
+  const int markerPx = mazeCellPx_ * 6 / 10;
+  lv_obj_t* exitMarker = addCircle(mazeExit_, markerPx, lv_color_make(0, 200, 120));
+  lv_obj_set_style_shadow_width(exitMarker, mazeCellPx_ / 3, 0);
+  lv_obj_set_style_shadow_color(exitMarker, lv_color_make(0, 255, 150), 0);
+  for (std::uint8_t i = 0; i < mazeHoleCount_; ++i) {
+    lv_obj_t* hole = addCircle(mazeHoles_[i], markerPx, lv_color_make(0, 0, 0));
+    lv_obj_set_style_border_width(hole, 2, 0);
+    lv_obj_set_style_border_color(hole, lv_color_make(200, 40, 40), 0);
+  }
+
+  constexpr int kWallPx = 6;
+  const lv_color_t wallColor = lv_color_make(110, 140, 220);
+  auto addWall = [&](int x, int y, int ww, int hh) {
+    lv_obj_t* o = lv_obj_create(mazeArea_);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_size(o, ww, hh);
+    lv_obj_set_style_bg_color(o, wallColor, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  };
+  const int half = kWallPx / 2;
+  addWall(0, 0, w + 1, kWallPx);              // outer border
+  addWall(0, h + 1 - kWallPx, w + 1, kWallPx);
+  addWall(0, 0, kWallPx, h + 1);
+  addWall(w + 1 - kWallPx, 0, kWallPx, h + 1);
+  const std::uint8_t cellCount = mazeCols_ * mazeRows_;
+  for (std::uint8_t i = 0; i < cellCount && mazeWalls_[i] != '\0'; ++i) {
+    const int bits = mazeWalls_[i] - '0';
+    const int col = i % mazeCols_;
+    const int row = i / mazeCols_;
+    const int x = col * mazeCellPx_;
+    const int y = row * mazeCellPx_;
+    if ((bits & 0x01) && col < mazeCols_ - 1) addWall(x + mazeCellPx_ - half, y - half, kWallPx, mazeCellPx_ + kWallPx);
+    if ((bits & 0x02) && row < mazeRows_ - 1) addWall(x - half, y + mazeCellPx_ - half, mazeCellPx_ + kWallPx, kWallPx);
+  }
+
+  // Ball diameter mirrors TiltMazePuzzle's kBallRadius (0.22 cells).
+  const int ballPx = mazeCellPx_ * 44 / 100;
+  lv_obj_set_size(mazeBall_, ballPx, ballPx);
+  lv_obj_move_foreground(mazeBall_);
+}
+
+void GameView::updateTiltMazeScreen() {
+  if (mazeId_ != mazeBuiltId_) {
+    rebuildMaze();
+  }
+  if (mazeCellPx_ > 0) {
+    const int ballPx = lv_obj_get_width(mazeBall_);
+    const int x = lv_obj_get_x(mazeArea_) + mazeBallX_ * mazeCellPx_ / 100 - ballPx / 2;
+    const int y = lv_obj_get_y(mazeArea_) + mazeBallY_ * mazeCellPx_ / 100 - ballPx / 2;
+    lv_obj_set_pos(mazeBall_, x, y);
+  }
+
+  if (!mazeSensorOnline_) {
+    lv_obj_set_style_text_color(mazeStatusLabel_, lv_color_make(255, 80, 80), 0);
+    lv_label_set_text(mazeStatusLabel_, "KANTELSENSOR OFFLINE");
+  } else {
+    lv_obj_set_style_text_color(mazeStatusLabel_, lv_color_make(160, 160, 180), 0);
+    lv_label_set_text_fmt(mazeStatusLabel_, "KANTEL DE DOOS NAAR DE GROENE KERN  -  GEVALLEN: %u", mazeFalls_);
+  }
+}
+
 void GameView::buildGenericPuzzleScreen() {
   genericPuzzleScreen_ = createScreen("", &genericTitleLabel_);
   addInstructionLabel(genericPuzzleScreen_, "KIJK NAAR HET PANEEL", 220);
@@ -654,6 +750,7 @@ void GameView::buildUi() {
 
   buildGridScreen();
   buildTetrisScreen();
+  buildTiltMazeScreen();
   buildGenericPuzzleScreen();
 
   successScreen_ = createScreen("REACTOR GESTABILISEERD");
@@ -910,15 +1007,9 @@ void GameView::updateGridScreen() {
 }
 
 void GameView::postGridTouch(std::uint8_t cell) {
-  HTTPClient http;
-  http.setConnectTimeout(300);
-  http.setTimeout(800);
-  http.begin(String("http://") + config::kMainControllerIp + "/api/touch");
-  http.addHeader("Content-Type", "application/json");
-  char body[32];
-  snprintf(body, sizeof(body), "{\"cell\":%u}", cell);
-  http.POST(body);
-  http.end();
+  // One newline-framed JSON line back over the same wire (display TX ->
+  // main controller RX); see AppController::pollDisplayUart.
+  mainUart_.printf("{\"touch\":%u}\n", cell);
 }
 
 void GameView::updateTetrisScreen() {

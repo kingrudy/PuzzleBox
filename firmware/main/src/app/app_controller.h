@@ -12,6 +12,7 @@
 #include "devices/color_sensor_service.h"
 #include "devices/highscore_service.h"
 #include "devices/hidden_trigger_service.h"
+#include "devices/imu_service.h"
 #include "devices/input_panel_service.h"
 #include "devices/matrix_service.h"
 #include "devices/rfid_service.h"
@@ -27,6 +28,7 @@
 #include "puzzles/resonant_grid_puzzle.h"
 #include "puzzles/spectral_tuner_puzzle.h"
 #include "puzzles/tetris_puzzle.h"
+#include "puzzles/tilt_maze_puzzle.h"
 #include "puzzles/vibrational_cipher_puzzle.h"
 
 // Owns every device service, the full 7-puzzle game (docs/puzzles/plan.md),
@@ -54,6 +56,7 @@ class AppController {
   void applyPendingDebugTest();
   void buildGameStatusJson(String& out);
   void pushGameStatusOverUart();
+  void pollDisplayUart();
 
   void tickSetup();
   void tickPuzzleSelection();
@@ -89,6 +92,7 @@ class AppController {
   ServoService servoService_;
 
   InputPanelService inputPanelService_;
+  ImuService imuService_;
   VibrationService vibrationService_;
   AudioCueBus audioCueBus_;
   HighscoreService highscoreService_;
@@ -101,9 +105,14 @@ class AppController {
   SpectralTunerPuzzle spectralTunerPuzzle_;
   LivingIntervalPuzzle livingIntervalPuzzle_;
   TetrisPuzzle tetrisPuzzle_;
+  TiltMazePuzzle tiltMazePuzzle_{imuService_};
   FinalePuzzle finalePuzzle_;
 
-  static constexpr std::uint8_t kShuffledCount = 6;  // every puzzle except Finale
+  // A run plays kShuffledCount puzzles drawn at random from the pool (every
+  // puzzle except Finale; the tilt maze only while the IMU is online), then
+  // the Finale. Kept at 6 even though the pool is now 7, so run length,
+  // time limits and the Finale's 6-digit recap stay as tuned.
+  static constexpr std::uint8_t kShuffledCount = 6;
   std::array<puzzles::Puzzle*, kShuffledCount> shuffledPuzzles_{};
   std::uint8_t currentPuzzleIndex_ = 0;  // 0..5 = shuffled puzzles, 6 = Finale
   puzzles::Puzzle* currentPuzzle_ = nullptr;
@@ -192,6 +201,12 @@ class AppController {
   HardwareSerial displayUart_{1};
   static constexpr std::uint32_t kUartPushIntervalMs = 10;
   std::uint32_t lastUartPushMs_ = 0;
+  static constexpr std::uint32_t kUartHeartbeatMs = 250;
+  String lastUartContent_;
+  std::uint32_t lastUartSendMs_ = 0;
+  // Return path: the display has no WiFi, so it sends newline-framed lines
+  // like {"touch":<cell>} back over the same wire (see pollDisplayUart).
+  String displayRxLine_;
 
   // Monotonic counter stamped into every buildGameStatusJson() snapshot as
   // "seq". The HTTP poll and the UART push race independently (different

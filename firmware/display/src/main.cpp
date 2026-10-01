@@ -1,8 +1,13 @@
 #include <Arduino.h>
+
+// Only the round display still talks WiFi/HTTP; the main display (s3) is
+// wired-UART only -- see GameView.
+#if defined(ESP32_2424S012N)
 #include <HTTPClient.h>
 #include <WiFi.h>
 
 #include "config/network_config.h"
+#endif
 #include "diagnostics/event_log.h"
 #include "display_board_profile.h"
 #include "display_speaker_service.h"
@@ -29,10 +34,12 @@ constexpr std::uint8_t kBacklightLedcChannel = 0;
 constexpr std::uint32_t kBacklightLedcFreqHz = 5000;
 constexpr std::uint8_t kBacklightLedcResolutionBits = 8;
 
+#if defined(ESP32_2424S012N)
 std::uint32_t lastPollMs = 0;
 constexpr std::uint32_t kOnlinePollIntervalMs = 750;
 constexpr std::uint32_t kOfflineRetryIntervalMs = 1500;
 bool wifiWasConnected = false;
+#endif
 
 void initBacklight() {
   ledcSetup(kBacklightLedcChannel, kBacklightLedcFreqHz, kBacklightLedcResolutionBits);
@@ -64,6 +71,7 @@ void printBootBanner() {
                 display_board::kHeight);
 }
 
+#if defined(ESP32_2424S012N)
 void pollMainController() {
   if (WiFi.status() != WL_CONNECTED) {
     return;
@@ -79,6 +87,7 @@ void pollMainController() {
   }
   http.end();
 }
+#endif
 
 }  // namespace
 
@@ -97,21 +106,23 @@ void setup() {
   gameView.begin(speakerService, touchService);
 #endif
 
+#if defined(ESP32_2424S012N)
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // default modem-sleep adds latency/jitter on this poll-driven link
   WiFi.begin(config::kApSsid, config::kApPassword);
+#endif
 }
 
 void loop() {
   eventLog.pollSerialCommand();  // "log"/"logs" over Serial dumps history
 
+#if defined(ESP32_2424S012N)
   const bool connected = WiFi.status() == WL_CONNECTED;
   if (connected != wifiWasConnected) {
     wifiWasConnected = connected;
     eventLog.logf("display", connected ? "Wi-Fi connected" : "Wi-Fi lost");
   }
 
-#if defined(ESP32_2424S012N)
   // The round display has no game-specific view yet (no touch, no audio —
   // see spec/components.md) — it stays a plain connectivity heartbeat.
   const std::uint32_t now = millis();

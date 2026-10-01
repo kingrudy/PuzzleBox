@@ -31,10 +31,10 @@ whatever you'd already solved doesn't carry over to a future run.
 
 ## 2. The rules that apply to every puzzle
 
-- **The order is random.** The six main puzzles are shuffled fresh every run — you might get
-  Tetris first and the memory game last, or any other order. The seventh puzzle, the Finale,
-  always comes last, because it depends on something every other puzzle gives you (see
-  below).
+- **The selection and order are random.** Each run draws six of the seven main puzzles below
+  and shuffles them — you might get Tetris first and the memory game last, and one puzzle sits
+  this run out. The Finale always comes last, because it depends on something every other
+  puzzle gives you (see below).
 - **One shared clock.** There's no separate timer per puzzle. Every second ticks off the same
   overall run clock, shown on the TM1638 panel and the big screen.
 - **Mistakes cost time, not attempts.** Nothing you do locks you out or ends a puzzle early.
@@ -176,9 +176,32 @@ you don't have to wait for the fall clock if you're ready sooner.
 
 ---
 
+### Zwaartekrachtlabyrint — Tilt Maze
+
+**What you'll see:** A maze on the big screen with a yellow ball in the top-left corner, a
+glowing green core somewhere far away, and a few black holes with red rims.
+
+**How to play:**
+1. Tilt the whole box to roll the ball. "Level" is however the box was lying when the
+   puzzle started — if that feels off, press any encoder's button to make the current
+   position the new level.
+2. Roll the ball into the green core to solve it.
+3. Avoid the holes. Fall into one and you feel a buzz, lose time, and the ball goes back to
+   the start. The holes sit in side passages right off the correct route, so take junctions
+   slowly.
+
+**Controls:** Tilt the box. Encoder buttons re-level.
+
+**Tip:** The TM1638 shows **KERN** with how many cells you still are from the core, and its
+LEDs fill up as you get closer.
+
+**Mistake cost:** 5–12 seconds per fall, depending on difficulty.
+
+---
+
 ### Eindsequentie — Finale
 
-This one only appears after all six puzzles above are solved.
+This one only appears after the six drawn puzzles are solved.
 
 **What you'll see:** The TM1638 panel plays back a short sequence — this time made of the
 "fragments" the other six puzzles quietly collected along the way.
@@ -219,7 +242,8 @@ lap, not a final gate. Take the win.
 | Encoder 1 | Time-limit selection (Setup) · tuning dial 1 · initials letter 1 |
 | Encoder 2 | Tuning dial 2 · initials letter 2 |
 | Encoder 3 | Tuning dial 3 · initials letter 3 |
-| Encoder button (any) | Confirm on Spectral Tuner / Living Interval once all three are locked/held |
+| Encoder button (any) | Confirm on Spectral Tuner / Living Interval once all three are locked/held · re-level the Tilt Maze |
+| Tilting the box | Tilt Maze only |
 | Touchscreen | Resonant Grid only |
 | Vibration (feel the box) | Vibrational Cipher only |
 

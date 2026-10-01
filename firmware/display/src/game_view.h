@@ -45,7 +45,6 @@ class GameView {
                 // internally rate-limits its own HTTP polls
 
  private:
-  bool fetchStatus();
   void applyGameStatus(JsonDocument& doc);
   void render();
   void showScreen(lv_obj_t* screen);
@@ -69,6 +68,8 @@ class GameView {
   void buildHighscoreRows(lv_obj_t* screen, std::array<lv_obj_t*, 5>& rows, int x, int y);
   void buildGridScreen();
   void buildTetrisScreen();
+  void buildTiltMazeScreen();
+  void rebuildMaze();
   void buildGenericPuzzleScreen();
   void buildHighscoreEntryScreen();
   void buildDebugScreen();
@@ -80,6 +81,7 @@ class GameView {
   void updateLivingScreen();
   void updateGridScreen();
   void updateTetrisScreen();
+  void updateTiltMazeScreen();
   void updateGenericPuzzleScreen();
   void updateSuccessScreen();
   void updateHighscoreEntryScreen();
@@ -135,6 +137,23 @@ class GameView {
   static constexpr std::uint8_t kTetrisCellPx = 22;
   std::array<std::array<std::uint8_t, kTetrisWidth>, kTetrisHeight> tetrisBoard_{};
 
+  // Tilt maze (see TiltMazePuzzle on the main controller). Walls/holes/exit
+  // are rebuilt only when mazeId_ changes; the ball just moves.
+  static constexpr std::uint8_t kMazeMaxCells = 60;
+  static constexpr std::uint8_t kMazeMaxHoles = 3;
+  std::uint32_t mazeId_ = 0;
+  std::uint32_t mazeBuiltId_ = 0;
+  std::uint8_t mazeCols_ = 0;
+  std::uint8_t mazeRows_ = 0;
+  char mazeWalls_[kMazeMaxCells + 1] = {0};
+  std::array<std::uint8_t, kMazeMaxHoles> mazeHoles_{};
+  std::uint8_t mazeHoleCount_ = 0;
+  std::uint8_t mazeExit_ = 0;
+  std::int32_t mazeBallX_ = 0;  // cell units x100
+  std::int32_t mazeBallY_ = 0;
+  std::uint8_t mazeFalls_ = 0;
+  bool mazeSensorOnline_ = true;
+
   static constexpr std::uint8_t kMaxHighscores = 10;
   static constexpr std::uint8_t kHighscoreShown = 5;
   struct HighscoreRow {
@@ -155,6 +174,7 @@ class GameView {
   lv_obj_t* livingScreen_ = nullptr;
   lv_obj_t* gridScreen_ = nullptr;
   lv_obj_t* tetrisScreen_ = nullptr;
+  lv_obj_t* tiltMazeScreen_ = nullptr;
   lv_obj_t* genericPuzzleScreen_ = nullptr;
   lv_obj_t* successScreen_ = nullptr;
   lv_obj_t* highscoreEntryScreen_ = nullptr;
@@ -178,6 +198,11 @@ class GameView {
   lv_obj_t* tetrisLinesLabel_ = nullptr;
   lv_obj_t* tetrisPausedLabel_ = nullptr;
 
+  lv_obj_t* mazeArea_ = nullptr;     // walls/holes/exit live here, cleared on rebuild
+  lv_obj_t* mazeBall_ = nullptr;
+  lv_obj_t* mazeStatusLabel_ = nullptr;
+  int mazeCellPx_ = 0;
+
   lv_obj_t* genericTitleLabel_ = nullptr;
 
   lv_obj_t* successTimeLabel_ = nullptr;
@@ -197,34 +222,21 @@ class GameView {
 
   // --- redraw bookkeeping ---
   bool connected_ = false;
-  std::uint8_t consecutiveFailures_ = 0;
-  std::uint32_t lastPollMs_ = 0;
-  // Highest AppController::statusSeq_ applied so far -- the HTTP poll and
-  // the WS push race independently, so a snapshot built before a
-  // since-applied one can still arrive after it; applyGameStatus() drops
-  // anything with seq <= this instead of stomping newer state with stale
-  // data (see the comment on statusSeq_ in app_controller.h).
+  // Highest AppController::statusSeq_ applied so far; applyGameStatus()
+  // drops anything with seq < this (out-of-order protection, see the
+  // comment on statusSeq_ in app_controller.h).
   std::uint32_t lastAppliedStatusSeq_ = 0;
 
-  // Supplementary push channel from AppController::displayUart_ (see its
-  // comment) -- GET /api/game above stays the connectivity-health/fallback
-  // mechanism (drives connected_/consecutiveFailures_ unchanged); a UART
-  // line just applies fresher state and re-renders immediately, without
-  // waiting for the next poll.
-  //
-  // This used to be a WebSocketsClient (WiFi), which did a BLOCKING TCP
-  // connect internally (5s worst case) whenever not currently connected --
-  // called from the main loop, that froze rendering/touch/HTTP-poll for up
-  // to 5s on any hiccup (hardware-confirmed: screen would stick on a stale
-  // value for a few seconds, then jump), needing a dedicated FreeRTOS task
-  // to work around. A direct wired UART has no such failure mode:
-  // HardwareSerial::available()/read() only ever look at an already-filled
-  // hardware FIFO and return immediately, so pollMainUart() can run
-  // straight on the main/LVGL loop with no task/mutex needed. GPIO12
-  // (RX) / GPIO13 (TX) were the display's TF/SD-card SPI MISO/SCLK -- see
-  // display_board_profile.h -- physically broken out but never used by
-  // this firmware, so free to repurpose; the far end is
-  // AppController::displayUart_ on the main controller's GPIO32/33.
+  // The display's only link to the main controller (it has no WiFi at all):
+  // status lines in, touch lines out (see AppController::displayUart_ and
+  // pollDisplayUart). Two earlier transports were dropped: an HTTP poll
+  // (blocking, stalled LVGL/touch/audio for 160-250ms per request) and a
+  // WebSocketsClient (blocking 5s TCP connect). HardwareSerial::available()/
+  // read() only look at an already-filled hardware FIFO and never block, so
+  // pollMainUart() runs straight on the main/LVGL loop. GPIO12 (RX) /
+  // GPIO13 (TX) were the TF/SD-card SPI SCLK/MISO -- see
+  // display_board_profile.h -- never used by this firmware; the far end is
+  // the main controller's GPIO33/32.
   HardwareSerial mainUart_{1};
   static constexpr std::uint8_t kMainUartRxPin = 12;
   static constexpr std::uint8_t kMainUartTxPin = 13;
@@ -233,6 +245,10 @@ class GameView {
   std::uint32_t uartLinesOk_ = 0;
   std::uint32_t uartLinesBad_ = 0;
   std::uint32_t lastUartDiagMs_ = 0;
+  std::uint32_t worstPollUs_ = 0;
+  std::uint32_t lastUartOkMs_ = 0;
+  // Main controller heartbeats every 250ms even when nothing changed.
+  static constexpr std::uint32_t kUartFreshMs = 1000;
 };
 
 #endif  // ESP32_8048S050C
